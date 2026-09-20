@@ -5,10 +5,15 @@
   <title>URL Screenshot Service</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
-    form { display: flex; gap: 0.5rem; }
-    input[type="url"] { flex: 1; padding: 0.5rem; font-size: 1rem; }
-    button { padding: 0.5rem 1rem; font-size: 1rem; cursor: pointer; }
+    form { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-end; }
+    .field { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.85rem; color: #444; }
+    .field.grow { flex: 1; min-width: 200px; }
+    .field-inline { display: flex; align-items: center; gap: 0.35rem; font-size: 0.85rem; color: #444; }
+    input[type="url"], input[type="number"] { padding: 0.5rem; font-size: 1rem; }
+    input[type="number"] { width: 5.5rem; }
+    button { padding: 0.5rem 1rem; font-size: 1rem; cursor: pointer; height: fit-content; }
     button:disabled { opacity: 0.6; cursor: default; }
+    fieldset { border: none; padding: 0; margin: 0; display: flex; gap: 0.75rem; flex-wrap: wrap; }
     #status { margin-top: 1rem; color: #666; }
     #error { margin-top: 1rem; color: #b00020; }
     #result { margin-top: 1.5rem; }
@@ -25,7 +30,23 @@
 <body>
   <h1>URL Screenshot Service</h1>
   <form id="screenshot-form">
-    <input type="url" id="url-input" placeholder="https://example.com" required>
+    <div class="field grow">
+      <label for="url-input">URL</label>
+      <input type="url" id="url-input" placeholder="https://example.com" required>
+    </div>
+    <div class="field">
+      <label for="width-input">Larghezza</label>
+      <input type="number" id="width-input" value="1280" min="200" max="3840">
+    </div>
+    <div class="field">
+      <label for="height-input">Altezza</label>
+      <input type="number" id="height-input" value="800" min="200" max="3840">
+    </div>
+    <fieldset>
+      <label class="field-inline"><input type="checkbox" id="full-page-input"> Pagina intera</label>
+      <label class="field-inline"><input type="checkbox" id="dark-mode-input"> Dark mode</label>
+      <label class="field-inline"><input type="checkbox" id="block-ads-input" checked> Blocca ads</label>
+    </fieldset>
     <button type="submit" id="submit-btn">Cattura screenshot</button>
   </form>
   <div id="status"></div>
@@ -83,7 +104,14 @@
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
-      const url = document.getElementById("url-input").value;
+      const payload = {
+        url: document.getElementById("url-input").value,
+        width: Number(document.getElementById("width-input").value) || 1280,
+        height: Number(document.getElementById("height-input").value) || 800,
+        full_page: document.getElementById("full-page-input").checked,
+        dark_mode: document.getElementById("dark-mode-input").checked,
+        block_ads: document.getElementById("block-ads-input").checked,
+      };
 
       submitBtn.disabled = true;
       status.textContent = "Invio in corso...";
@@ -95,7 +123,7 @@
         const response = await fetch("/screenshot", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url }),
+          body: JSON.stringify(payload),
         });
 
         if (!response.ok) {
