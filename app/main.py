@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
@@ -11,12 +12,14 @@ from app.utils import url_to_filename
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="URL Screenshot Service")
 
-
-@app.lifespan("startup")
-def ensure_screenshots_dir() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+    yield
+
+
+app = FastAPI(title="URL Screenshot Service", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -26,7 +29,8 @@ def health() -> dict:
 
 @app.post("/screenshot", response_model=ScreenshotResponse)
 async def screenshot(request: ScreenshotRequest) -> ScreenshotResponse:
-    filename = url_to_filename(request.url)
+    url = str(request.url)
+    filename = url_to_filename(url)
     output_path = os.path.join(SCREENSHOTS_DIR, filename)
-    capture_screenshot(request.url, output_path)
+    await capture_screenshot(url, output_path)
     return ScreenshotResponse(filename=filename, path=output_path)
