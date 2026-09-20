@@ -88,7 +88,7 @@ curl -X POST http://localhost:8000/screenshot/3f2.../retry
 curl http://localhost:8000/jobs
 
 # Scarica lo screenshot generato
-curl -o out.png http://localhost:8000/screenshots/screenshot_www_google_com.png
+curl -o out.jpeg http://localhost:8000/screenshots/screenshot_www_google_com.jpeg
 
 # Metriche: quanti job completati, quanti in errore, tempo medio di completamento
 curl http://localhost:8000/stats
@@ -120,6 +120,7 @@ curl -X POST http://localhost:8000/screenshot \
 | `MAX_CONCURRENT_CAPTURES` | `2`                  | Quanti screenshot possono essere generati insieme |
 | `RATE_LIMIT`              | `5/minute`           | Quante richieste può fare un client per minuto |
 | `API_KEY`                 | *(vuota)*            | Se impostata, protegge gli endpoint con una chiave (header `X-API-Key`). Vuota di default: nessuna autenticazione |
+| `LOG_LEVEL`                | `INFO`               | Livello minimo dei log stampati (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 
 ## Come funziona
 
@@ -159,6 +160,7 @@ Se un job finisce in `error` (es. sito irraggiungibile), resta salvato con l'err
 - **`app/security.py`** — controlla che l'URL richiesto non punti a un indirizzo "interno" (vedi sezione [Sicurezza](#sicurezza) sotto).
 - **`app/utils.py`** — un paio di funzioni di supporto: genera il nome del file dello screenshot dall'URL, e controlla se un sito risponde prima di aprire il browser (più leggero che avviare Chromium per niente).
 - **`app/config.py`** — tutte le impostazioni del servizio (letture da variabili d'ambiente), in un unico punto.
+- **`app/logger.py`** — configura il logging (formato con timestamp, livello da `LOG_LEVEL`) e centralizza i log degli eventi rilevanti in una classe (`AppLogger`): un metodo per evento (job creato/completato/fallito, retry, blocco SSRF, autenticazione fallita), così il resto del codice non decide di volta in volta cosa e come loggare. Non logga ogni riga di codice, solo ciò che serve per capire cosa succede in produzione senza dover leggere il codice.
 - **`app/static/index.html`** — una piccola pagina web per usare il servizio dal browser senza scrivere codice: un form per inviare un URL, una tabella che mostra tutti i job e un pannello con le metriche da `/stats`.
 
 ## Sicurezza
@@ -195,6 +197,7 @@ Cosa fa il servizio per proteggersi:
 │   ├── utils.py                # Funzioni di supporto
 │   ├── security.py             # Controllo anti-SSRF
 │   ├── config.py               # Impostazioni del servizio
+│   ├── logger.py                # Configurazione e log degli eventi rilevanti
 │   ├── schemas.py              # Forma dei dati in ingresso/uscita
 │   └── static/index.html      # Interfaccia web minimale
 ├── tests/                        # Test automatici (pytest)
