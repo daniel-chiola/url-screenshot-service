@@ -208,7 +208,7 @@ Interrogare lo stato del job (con l'id restituito sopra):
 
 ```bash
 curl http://localhost:8000/screenshot/3f2...
-# → {"id":"3f2...","url":"https://www.google.com/","status":"done","filename":"screenshot_www.google.com.png","error":null,"created_at":"..."}
+# → {"id":"3f2...","url":"https://www.google.com/","status":"done","filename":"screenshot_www_google_com.png","error":null,"created_at":"..."}
 ```
 
 Vedere l'intera coda:
@@ -220,7 +220,7 @@ curl http://localhost:8000/jobs
 Recuperare l'immagine generata via HTTP (filename dallo stato del job):
 
 ```bash
-curl -o out.png http://localhost:8000/screenshots/screenshot_www.google.com.png
+curl -o out.png http://localhost:8000/screenshots/screenshot_www_google_com.png
 ```
 
 ### Verificare il file salvato su disco

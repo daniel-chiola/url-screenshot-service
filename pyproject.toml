@@ -21,3 +21,8 @@ dev = [
     "pytest>=9.1.1",
     "pytest-html>=4.2.0",
 ]
+
+[tool.pytest.ini_options]
+# Aggiunge la cartella del progetto a sys.path, così i test possono fare
+# "from app import ..." indipendentemente da dove/come viene lanciato pytest.
+pythonpath = ["."]
