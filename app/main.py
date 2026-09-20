@@ -14,6 +14,7 @@ from app import jobs
 from app.config import RATE_LIMIT, SCREENSHOTS_DIR
 from app.jobs import Job
 from app.schemas import JobDetail, JobResponse, ScreenshotRequest
+from app.security import is_safe_url
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -52,6 +53,10 @@ async def submit_screenshot(
 ) -> JobResponse:
     """Accoda la cattura di uno screenshot e torna subito l'id del job."""
     url = str(payload.url)
+    if not await is_safe_url(url):
+        logger.warning("URL bloccato (protezione SSRF): %s", url)
+        raise HTTPException(status_code=403, detail="URL non consentito (indirizzo privato o riservato)")
+
     job = jobs.create_job(
         url,
         width=payload.width,

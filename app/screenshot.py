@@ -5,6 +5,8 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from app.security import is_safe_url
+
 # Pattern minimi per bloccare i principali network pubblicitari/di tracking più comuni.
 AD_URL_PATTERNS = (
     "doubleclick.net",
@@ -17,11 +19,19 @@ AD_URL_PATTERNS = (
 )
 
 
-async def _block_ads(route: Route) -> None:
-    if any(pattern in route.request.url for pattern in AD_URL_PATTERNS):
-        await route.abort()
-    else:
+def _make_route_guard(block_ads: bool):
+    async def guard(route: Route) -> None:
+        request = route.request
+        # Blocca ogni navigazione (inclusi i redirect) verso IP privati/riservati: protezione SSRF.
+        if request.resource_type == "document" and not await is_safe_url(request.url):
+            await route.abort()
+            return
+        if block_ads and any(pattern in request.url for pattern in AD_URL_PATTERNS):
+            await route.abort()
+            return
         await route.continue_()
+
+    return guard
 
 
 @retry(
@@ -46,8 +56,7 @@ async def capture_screenshot(
                 viewport={"width": width, "height": height},
                 color_scheme="dark" if dark_mode else "light",
             )
-            if block_ads:
-                await page.route("**/*", _block_ads)
+            await page.route("**/*", _make_route_guard(block_ads))
             await page.goto(url)
             await page.screenshot(path=output_path, full_page=full_page)
         finally:

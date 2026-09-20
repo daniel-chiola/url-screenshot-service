@@ -13,6 +13,7 @@ Client (curl / Swagger UI) ──┤
                         ▼
                 FastAPI (app/main.py)
                         │  valida l'URL, rate limit per IP (slowapi)
+                        │  blocca IP privati/riservati (app/security.py) → 403 se non sicuro
                         │  crea il job (app/jobs.py) → 202 {"id", "status": "pending"}
                         │  schedula process_job() in BackgroundTasks
                         ▼
@@ -23,6 +24,7 @@ Client (curl / Swagger UI) ──┤
                         │  semaforo: max N catture Playwright in parallelo
                         ▼
         Playwright / Chromium headless (app/screenshot.py)
+                        │  ri-verifica ogni navigazione/redirect (protezione SSRF)
                         │  apre la pagina, cattura lo screenshot
                         │  (retry con backoff esponenziale sui timeout)
                         ▼
@@ -38,10 +40,21 @@ Componenti:
 - **Coda dei job** ([app/jobs.py](app/jobs.py)): job store in-memory (nessun DB/broker esterno). `process_job()` orchestra verifica di raggiungibilità, derivazione nome file e cattura, aggiornando lo stato del job (`pending` → `processing` → `done`/`error`). Un `asyncio.Semaphore` limita quante catture Playwright girano in parallelo, indipendentemente dal rate limit sulle richieste in ingresso.
 - **Playwright (Chromium headless)** ([app/screenshot.py](app/screenshot.py)): apre la pagina e cattura lo screenshot, con retry automatico (`tenacity`, backoff esponenziale, max 3 tentativi) sui timeout di navigazione.
 - **app/utils.py**: deriva un nome file sicuro dall'URL (es. `https://google.com` → `screenshot_google_com.png`) e verifica la raggiungibilità dell'URL via HTTP (`is_reachable`) prima di avviare il browser.
+- **app/security.py**: protezione SSRF (`is_safe_url`) — risolve l'host via DNS e blocca IP privati, loopback, link-local (incluso l'endpoint di metadata cloud `169.254.169.254`), riservati o multicast.
 - **app/config.py**: configurazione centralizzata (directory di output, limite di concorrenza, rate limit — tutti letti da env var).
 - **UI web minimale** ([app/static/index.html](app/static/index.html)): pagina HTML/JS vanilla servita su `GET /`. Form per inviare un URL con le opzioni di cattura (polling automatico sul job fino al risultato) e tabella che mostra l'intera coda in tempo reale.
 - **Opzioni di cattura personalizzabili**: `width`/`height` (viewport), `full_page` (pagina intera vs solo viewport), `dark_mode` (`prefers-color-scheme: dark`), `block_ads` (blocca via `page.route()` le richieste verso i principali network pubblicitari/di tracking). Configurabili sia via API (`ScreenshotRequest`) sia dalla UI.
 - **Volume Docker**: gli screenshot vengono salvati in `./screenshots` sull'host, montata nel container, così restano accessibili anche dopo lo stop del container. La stessa cartella è servita come file statici su `GET /screenshots/<filename>`.
+
+### Sicurezza
+
+Un servizio che va a fetchare URL arbitrari forniti dall'utente è per natura esposto a **SSRF** (Server-Side Request Forgery): senza controlli, potrebbe essere usato per raggiungere risorse interne alla rete del container (`localhost`, IP privati, endpoint di metadata cloud come `169.254.169.254`). Le difese implementate:
+
+- **Controllo all'ingresso** ([app/security.py](app/security.py), usato in [app/main.py](app/main.py)): prima di accodare qualunque job, l'host dell'URL viene risolto via DNS e ogni IP risultante viene verificato contro i range privati/loopback/link-local/riservati/multicast (modulo `ipaddress` della stdlib). Se anche un solo IP risolto è "non sicuro", la richiesta viene rifiutata con `403` — il job non viene nemmeno creato.
+- **Controllo ad ogni navigazione/redirect** ([app/screenshot.py](app/screenshot.py)): il solo controllo iniziale non basta, perché un URL pubblico può reindirizzare a un indirizzo interno *dopo* il controllo (bypass classico). Playwright viene istruito (`page.route()`) a ri-validare l'host di **ogni** richiesta di navigazione (incluso ogni hop di redirect) prima di lasciarla proseguire, non solo dell'URL iniziale.
+- **`is_reachable` senza follow-redirect** ([app/utils.py](app/utils.py)): il pre-check HTTP non segue più i redirect (`follow_redirects=False`) — un 3xx è comunque `< 400` quindi il risultato non cambia, ma si evita che questo pre-check diventi un oracolo cieco per sondare porte/indirizzi interni prima ancora che scatti la protezione di Playwright.
+
+**Limite noto, dichiarato onestamente**: resta un'esposizione teorica a DNS rebinding (l'host risolve a un IP pubblico al momento del controllo, poi il DNS cambia risposta prima della connessione effettiva). Chiuderlo del tutto richiederebbe pinnare l'IP risolto e usarlo direttamente per la connessione TCP (bypassando una seconda risoluzione DNS), cosa che Playwright non espone facilmente da API pubblica — non implementato per restare nello scope del progetto.
 
 ### Scelte tecniche
 
@@ -63,6 +76,7 @@ Componenti:
 │   ├── jobs.py             # Coda in-memory dei job, semaforo di concorrenza
 │   ├── screenshot.py      # Logica di cattura screenshot (Playwright)
 │   ├── utils.py            # Derivazione nome file da URL, check raggiungibilità
+│   ├── security.py         # Protezione SSRF (blocco IP privati/riservati)
 │   ├── config.py           # Configurazione (directory output, rate limit, ecc.)
 │   ├── schemas.py          # Modelli Pydantic (request/response)
 │   └── static/
