@@ -10,11 +10,15 @@ pytestmark = pytest.mark.anyio
 
 
 # --- create_job / get_job / list_jobs: nessun mock, sono funzioni semplici ---
+#
+# I job sono persistiti su SQLite (app/db.py): get_job/list_jobs non restituiscono
+# più lo stesso oggetto Python passato a create_job, ma una nuova istanza letta dal
+# DB. Per questo confrontiamo i valori (==) invece dell'identità dell'oggetto (is).
 
 
-def test_create_job_valori_di_default():
+async def test_create_job_valori_di_default():
     """Un job appena creato ha i valori di default attesi e stato 'pending'."""
-    job = jobs.create_job("https://example.com")
+    job = await jobs.create_job("https://example.com")
 
     assert job.url == "https://example.com"
     assert job.status == "pending"
@@ -24,35 +28,35 @@ def test_create_job_valori_di_default():
     assert job.filename is None
 
 
-def test_create_job_registra_il_job_nella_coda():
+async def test_create_job_registra_il_job_nella_coda():
     """create_job salva il job nella coda: get_job lo ritrova subito dopo."""
-    job = jobs.create_job("https://example.com")
+    job = await jobs.create_job("https://example.com")
 
-    assert jobs.get_job(job.id) is job
+    assert await jobs.get_job(job.id) == job
 
 
-def test_get_job_con_id_inesistente_torna_none():
+async def test_get_job_con_id_inesistente_torna_none():
     """get_job con un id sconosciuto torna None, non solleva un errore."""
-    assert jobs.get_job("id-che-non-esiste") is None
+    assert await jobs.get_job("id-che-non-esiste") is None
 
 
-def test_list_jobs_mostra_il_piu_recente_per_primo():
+async def test_list_jobs_mostra_il_piu_recente_per_primo():
     """list_jobs ordina i job dal più recente al più vecchio."""
-    first = jobs.create_job("https://uno.com")
-    second = jobs.create_job("https://due.com")
+    first = await jobs.create_job("https://uno.com")
+    second = await jobs.create_job("https://due.com")
 
-    result = jobs.list_jobs()
+    result = await jobs.list_jobs()
 
     assert result[0].id == second.id
     assert result[1].id == first.id
 
 
-def test_list_jobs_rispetta_il_limite():
+async def test_list_jobs_rispetta_il_limite():
     """list_jobs non restituisce mai più job del limite richiesto."""
     for i in range(5):
-        jobs.create_job(f"https://esempio{i}.com")
+        await jobs.create_job(f"https://esempio{i}.com")
 
-    result = jobs.list_jobs(limit=2)
+    result = await jobs.list_jobs(limit=2)
 
     assert len(result) == 2
 
@@ -65,6 +69,15 @@ def test_list_jobs_rispetta_il_limite():
 # jobs.is_reachable / jobs.capture_screenshot (dove vengono USATE), non
 # app.utils.is_reachable (dove sono DEFINITE) — altrimenti jobs.py continuerebbe
 # a usare la versione vera, perché il suo riferimento non cambia.
+#
+# Nota: dopo process_job() il job va ri-letto con get_job(), non basta controllare
+# l'oggetto `job` originale — non è più la stessa istanza mutata in place come con
+# il vecchio dizionario in-memory, ma una copia letta dal DB al momento della create.
+
+
+async def test_process_job_id_inesistente_non_solleva_errore():
+    """process_job su un id inesistente (es. job cancellato nel frattempo) non fallisce."""
+    await jobs.process_job("id-che-non-esiste")  # non deve sollevare eccezioni
 
 
 async def test_process_job_url_non_raggiungibile(monkeypatch):
@@ -74,11 +87,12 @@ async def test_process_job_url_non_raggiungibile(monkeypatch):
 
     monkeypatch.setattr(jobs, "is_reachable", fake_is_reachable)
 
-    job = jobs.create_job("https://esempio-morto.com")
+    job = await jobs.create_job("https://esempio-morto.com")
     await jobs.process_job(job.id)
 
-    assert job.status == "error"
-    assert job.error == "URL non raggiungibile"
+    updated = await jobs.get_job(job.id)
+    assert updated.status == "error"
+    assert updated.error == "URL non raggiungibile"
 
 
 async def test_process_job_cattura_riuscita(monkeypatch):
@@ -92,11 +106,12 @@ async def test_process_job_cattura_riuscita(monkeypatch):
     monkeypatch.setattr(jobs, "is_reachable", fake_is_reachable)
     monkeypatch.setattr(jobs, "capture_screenshot", fake_capture_screenshot)
 
-    job = jobs.create_job("https://example.com")
+    job = await jobs.create_job("https://example.com")
     await jobs.process_job(job.id)
 
-    assert job.status == "done"
-    assert job.filename == "screenshot_example_com.png"
+    updated = await jobs.get_job(job.id)
+    assert updated.status == "done"
+    assert updated.filename == "screenshot_example_com.png"
 
 
 async def test_process_job_cattura_fallita(monkeypatch):
@@ -110,8 +125,41 @@ async def test_process_job_cattura_fallita(monkeypatch):
     monkeypatch.setattr(jobs, "is_reachable", fake_is_reachable)
     monkeypatch.setattr(jobs, "capture_screenshot", fake_capture_screenshot)
 
-    job = jobs.create_job("https://example.com")
+    job = await jobs.create_job("https://example.com")
     await jobs.process_job(job.id)
 
-    assert job.status == "error"
-    assert job.error == "Playwright è esploso"
+    updated = await jobs.get_job(job.id)
+    assert updated.status == "error"
+    assert updated.error == "Playwright è esploso"
+
+
+# --- retry_job ---
+
+
+async def test_retry_job_rimette_in_coda_un_job_fallito(monkeypatch):
+    """retry_job riporta un job da 'error' a 'pending', ripulendo errore e filename."""
+    async def fake_is_reachable(url):
+        return False
+
+    monkeypatch.setattr(jobs, "is_reachable", fake_is_reachable)
+
+    job = await jobs.create_job("https://esempio-morto.com")
+    await jobs.process_job(job.id)
+
+    retried = await jobs.retry_job(job.id)
+
+    assert retried.status == "pending"
+    assert retried.error is None
+    assert retried.filename is None
+
+
+async def test_retry_job_rifiuta_un_job_non_in_errore():
+    """retry_job su un job che non è in stato 'error' (es. 'pending') torna None."""
+    job = await jobs.create_job("https://example.com")
+
+    assert await jobs.retry_job(job.id) is None
+
+
+async def test_retry_job_con_id_inesistente_torna_none():
+    """retry_job con un id sconosciuto torna None, non solleva un errore."""
+    assert await jobs.retry_job("id-che-non-esiste") is None
