@@ -175,14 +175,14 @@ Cosa fa il servizio per proteggersi:
 - **Chiave API opzionale**: impostando la variabile `API_KEY`, gli endpoint principali richiedono l'header `X-API-Key` con il valore giusto, altrimenti rispondono `401`. Di default è disattivata, per poter provare subito il servizio senza configurare nulla — va attivata se il servizio viene esposto pubblicamente.
 - **Il container non gira come root**: se qualcuno riuscisse a compromettere il servizio, si ritroverebbe con i permessi di un utente limitato, non con accesso completo al sistema.
 
-## Scelte tecniche (e perché)
+## Scelte tecniche
 
-- **Playwright** per fare gli screenshot: rispetto ad alternative come Selenium, ha un'API più moderna e gestisce da solo l'installazione del browser.
-- **Nessuna coda esterna (no Redis/Kafka)**: per non far aspettare il client bastava eseguire la cattura "in background" nello stesso processo (`BackgroundTasks` di FastAPI). Aggiungere un sistema di messaggistica separato avrebbe significato più infrastruttura da gestire, senza un reale bisogno a questa scala (un solo servizio, poche richieste).
-- **SQLite invece di un database vero e proprio (Postgres)**: stessa logica — è un singolo file, non serve un servizio server separato da avviare e configurare. Per un servizio che scrive pochi dati e non deve scalare su più server, è sufficiente.
-- **Un endpoint di retry manuale (`POST /screenshot/{id}/retry`)** invece di un sistema automatico di ritenta-i-falliti: più semplice da capire e da usare, e i job falliti restano comunque visibili e recuperabili quando serve.
-- **`uv`** per gestire le dipendenze Python invece di pip: è più veloce, soprattutto quando si reinstalla spesso (es. durante lo sviluppo o nella pipeline CI).
-- **Un controllo HTTP invece di un "ping"** per vedere se un sito è raggiungibile: il ping spesso non funziona su hosting/cloud (bloccato dai firewall) anche quando il sito è perfettamente raggiungibile via browser.
+- Ho utilizzato **Playwright** perché ha un'API più moderna di Selenium e gestisce da solo l'installazione del browser.
+- Ho evitato una **coda esterna (Redis/Kafka)** perché bastava eseguire la cattura in background nello stesso processo (`BackgroundTasks` di FastAPI), senza infrastruttura in più da gestire.
+- Ho usato **SQLite** invece di Postgres perché è un singolo file, senza un server da installare e configurare a parte.
+- Ho scelto un **endpoint di retry manuale** invece di un sistema automatico perché è più semplice da usare, e i job falliti restano comunque visibili.
+- Ho usato **uv** invece di pip perché è molto più veloce, soprattutto in sviluppo e nella pipeline CI.
+- Ho usato un **controllo HTTP** invece di un ping per verificare se un sito è raggiungibile, perché il ping è spesso bloccato dai firewall dei provider cloud.
 
 ## Struttura del progetto
 
@@ -205,6 +205,7 @@ Cosa fa il servizio per proteggersi:
 ├── data/                         # File SQLite dei job (cartella condivisa col container)
 ├── Dockerfile                    # Build dell'immagine (produzione + test)
 ├── docker-compose.yml
+├── .env.example                  # Variabili d'ambiente di esempio per l'esecuzione in locale
 ├── pyproject.toml               # Dipendenze del progetto
 └── uv.lock
 ```
@@ -228,12 +229,3 @@ uv run pytest
 ```
 
 > **Nota**: `app/screenshot.py` ha una copertura di test bassa (~33%) di proposito — la parte che apre davvero Chromium non viene testata con un browser vero (renderebbe i test lenti e meno affidabili), ma con un "finto" screenshot (mock). È una scelta, non una lacuna.
-
-## Possibili miglioramenti futuri
-
-Cose che lascerei fuori scope per questo progetto, ma che avrebbero senso se dovesse crescere:
-
-- **Storage su cloud (es. S3)** invece che su disco locale: utile se il servizio dovesse girare su più container contemporaneamente, che oggi non potrebbero condividere la stessa cartella.
-- **Autenticazione più solida** (es. OAuth2/JWT) al posto della semplice chiave API, se il servizio venisse esposto a più utenti con permessi diversi.
-- **Metriche più complete** (es. Prometheus/Grafana): `GET /stats` oggi copre solo l'essenziale (job completati, in errore, tempo medio di completamento), letto direttamente da SQLite — niente storico nel tempo, solo lo stato attuale. Per quello servirebbe un sistema di monitoring vero e proprio, fuori scope per questo progetto (vedi sopra perché non l'ho aggiunto).
-- **Test end-to-end con un browser reale**: la suite attuale non apre mai davvero Chromium (per restare veloce e affidabile); un secondo livello di test, più lento, potrebbe verificare anche quella parte.
