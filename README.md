@@ -10,8 +10,20 @@ Servizio containerizzato che riceve un URL via API REST, genera uno screenshot d
 
 ## Setup
 
+### Con Docker (consigliato)
+
 ```bash
 docker compose up --build
+```
+
+Il servizio sarà disponibile su `http://localhost:8000`.
+
+### Sviluppo locale (con uv)
+
+```bash
+uv sync
+uv run playwright install chromium --with-deps
+uv run uvicorn app.main:app --reload
 ```
 
 Il servizio sarà disponibile su `http://localhost:8000`.
