@@ -25,7 +25,7 @@ cd url-screenshot-service
 docker compose up -d --build
 ```
 
-Il servizio sarà su `http://localhost:8000`. Gli screenshot generati finiscono nella cartella `./screenshots`.
+Il servizio sarà su `http://localhost:8000`. Gli screenshot generati finiscono nella cartella `./screenshots` sull'host — che è in realtà un volume Docker collegato a `/app/screenshots` dentro il container, dove il servizio li salva davvero.
 
 Altri comandi utili:
 
