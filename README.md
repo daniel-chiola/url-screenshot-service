@@ -208,11 +208,3 @@ deve mostrare il file appena generato.
 | `MAX_CONCURRENT_CAPTURES` | `2`                  | Numero massimo di catture Playwright in parallelo |
 | `RATE_LIMIT`              | `5/minute`           | Limite di richieste `POST /screenshot` per IP (sintassi `slowapi`) |
 
-## TODO
-
-- [x] Implementare `url_to_filename` in [app/utils.py](app/utils.py)
-- [x] Implementare `capture_screenshot` in [app/screenshot.py](app/screenshot.py)
-- [x] Implementare l'endpoint `/screenshot` in [app/main.py](app/main.py)
-- [x] Logging e gestione errori (URL non raggiungibili, timeout, ecc.)
-- [x] Retry per URL non accessibili (extra)
-- [x] UI web minimale (extra)
