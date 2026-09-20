@@ -66,7 +66,7 @@ async def submit_screenshot(
         logger.warning("URL bloccato (protezione SSRF): %s", url)
         raise HTTPException(status_code=403, detail="URL non consentito (indirizzo privato o riservato)")
 
-    job = jobs.create_job(
+    job = await jobs.create_job(
         url,
         width=payload.width,
         height=payload.height,
@@ -79,18 +79,34 @@ async def submit_screenshot(
 
 
 @app.get("/screenshot/{job_id}", response_model=JobDetail, dependencies=[Depends(require_api_key)])
-def get_screenshot_status(job_id: str) -> JobDetail:
+async def get_screenshot_status(job_id: str) -> JobDetail:
     """Stato di un job di screenshot."""
-    job = jobs.get_job(job_id)
+    job = await jobs.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job non trovato")
     return _to_detail(job)
 
 
+@app.post(
+    "/screenshot/{job_id}/retry",
+    response_model=JobResponse,
+    status_code=202,
+    dependencies=[Depends(require_api_key)],
+)
+@limiter.limit(RATE_LIMIT)
+async def retry_screenshot(request: Request, job_id: str, background_tasks: BackgroundTasks) -> JobResponse:
+    """Rimette in coda un job in stato 'error' per un nuovo tentativo."""
+    job = await jobs.retry_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job non trovato o non in stato di errore")
+    background_tasks.add_task(jobs.process_job, job.id)
+    return JobResponse(id=job.id, status=job.status)
+
+
 @app.get("/jobs", response_model=list[JobDetail], dependencies=[Depends(require_api_key)])
-def list_jobs() -> list[JobDetail]:
+async def list_jobs() -> list[JobDetail]:
     """Coda dei job, dal più recente al più vecchio."""
-    return [_to_detail(job) for job in jobs.list_jobs()]
+    return [_to_detail(job) for job in await jobs.list_jobs()]
 
 
 app.mount("/screenshots", StaticFiles(directory=SCREENSHOTS_DIR), name="screenshots")
