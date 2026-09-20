@@ -98,23 +98,28 @@
       return div.innerHTML;
     }
 
-    async function pollJob(jobId) {
+async function pollJob(jobId) {
       try {
         const response = await fetch(`/screenshot/${jobId}`);
         const data = await response.json();
 
         if (data.status === "done") {
           clearInterval(pollTimer);
-          status.textContent = `Salvato come ${data.filename}`;
-          result.innerHTML = `<img src="/screenshots/${encodeURIComponent(data.filename)}?t=${Date.now()}" alt="${escapeHtml(data.filename)}">`;
+          status.innerHTML = `✅ Completato! <a href="/screenshots/${encodeURIComponent(data.filename)}" target="_blank">Apri il file JPEG</a>`;
           submitBtn.disabled = false;
+          await refreshJobs();
+          await refreshStats();
         } else if (data.status === "error") {
           clearInterval(pollTimer);
           status.textContent = "";
-          error.textContent = data.error || "Errore durante la cattura";
+          error.textContent = "❌ " + (data.error || "Errore durante la cattura");
           submitBtn.disabled = false;
+          await refreshJobs();
+          await refreshStats();
         } else {
-          status.textContent = `Stato: ${data.status}...`;
+          // SE È IN CORSO: aggiorniamo il testo e ANCHE la tabella!
+          status.textContent = `⏳ Stato: ${data.status}...`;
+          await refreshJobs(); 
         }
       } catch (err) {
         clearInterval(pollTimer);
@@ -125,19 +130,19 @@
 
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
+      
       const payload = {
         url: document.getElementById("url-input").value,
-        width: Number(document.getElementById("width-input").value) || 1280,
-        height: Number(document.getElementById("height-input").value) || 800,
+        width: 1280,
+        height: 800,
         full_page: document.getElementById("full-page-input").checked,
         dark_mode: document.getElementById("dark-mode-input").checked,
         block_ads: document.getElementById("block-ads-input").checked,
       };
 
       submitBtn.disabled = true;
-      status.textContent = "Invio in corso...";
+      status.textContent = "🚀 Invio in corso...";
       error.textContent = "";
-      result.innerHTML = "";
       if (pollTimer) clearInterval(pollTimer);
 
       try {
@@ -153,7 +158,11 @@
         }
 
         const data = await response.json();
-        status.textContent = "In coda...";
+        status.textContent = "⏳ In coda...";
+        
+        // AGGIUNTA: Aggiorniamo subito la tabella appena il job è creato
+        await refreshJobs(); 
+        
         pollTimer = setInterval(() => pollJob(data.id), 1500);
       } catch (err) {
         status.textContent = "";
@@ -212,7 +221,6 @@
     }
 
     refreshJobs();
-    setInterval(refreshJobs, 2000);
 
     const metricsEls = {
       doneJobs: document.getElementById("done-jobs"),
