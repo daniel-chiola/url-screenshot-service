@@ -13,6 +13,7 @@ pytestmark = pytest.mark.anyio
 
 
 def test_create_job_valori_di_default():
+    """Un job appena creato ha i valori di default attesi e stato 'pending'."""
     job = jobs.create_job("https://example.com")
 
     assert job.url == "https://example.com"
@@ -24,32 +25,36 @@ def test_create_job_valori_di_default():
 
 
 def test_create_job_registra_il_job_nella_coda():
+    """create_job salva il job nella coda: get_job lo ritrova subito dopo."""
     job = jobs.create_job("https://example.com")
 
     assert jobs.get_job(job.id) is job
 
 
 def test_get_job_con_id_inesistente_torna_none():
+    """get_job con un id sconosciuto torna None, non solleva un errore."""
     assert jobs.get_job("id-che-non-esiste") is None
 
 
 def test_list_jobs_mostra_il_piu_recente_per_primo():
-    primo = jobs.create_job("https://uno.com")
-    secondo = jobs.create_job("https://due.com")
+    """list_jobs ordina i job dal più recente al più vecchio."""
+    first = jobs.create_job("https://uno.com")
+    second = jobs.create_job("https://due.com")
 
-    risultato = jobs.list_jobs()
+    result = jobs.list_jobs()
 
-    assert risultato[0].id == secondo.id
-    assert risultato[1].id == primo.id
+    assert result[0].id == second.id
+    assert result[1].id == first.id
 
 
 def test_list_jobs_rispetta_il_limite():
+    """list_jobs non restituisce mai più job del limite richiesto."""
     for i in range(5):
         jobs.create_job(f"https://esempio{i}.com")
 
-    risultato = jobs.list_jobs(limit=2)
+    result = jobs.list_jobs(limit=2)
 
-    assert len(risultato) == 2
+    assert len(result) == 2
 
 
 # --- process_job: qui servono i mock, per non chiamare rete/browser veri ---
@@ -63,6 +68,7 @@ def test_list_jobs_rispetta_il_limite():
 
 
 async def test_process_job_url_non_raggiungibile(monkeypatch):
+    """Se l'URL non è raggiungibile, il job va in 'error' senza tentare la cattura."""
     async def fake_is_reachable(url):
         return False
 
@@ -76,6 +82,7 @@ async def test_process_job_url_non_raggiungibile(monkeypatch):
 
 
 async def test_process_job_cattura_riuscita(monkeypatch):
+    """Se la cattura va a buon fine, il job passa a 'done' con il filename impostato."""
     async def fake_is_reachable(url):
         return True
 
@@ -93,6 +100,7 @@ async def test_process_job_cattura_riuscita(monkeypatch):
 
 
 async def test_process_job_cattura_fallita(monkeypatch):
+    """Se capture_screenshot solleva un'eccezione, il job va in 'error' con il messaggio."""
     async def fake_is_reachable(url):
         return True
 
