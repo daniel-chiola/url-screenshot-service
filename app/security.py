@@ -1,4 +1,10 @@
-"""Protezione SSRF: impedisce al servizio di raggiungere indirizzi IP privati o riservati."""
+"""Impedisce al servizio di visitare indirizzi che non dovrebbe raggiungere.
+
+Il servizio va a caricare qualsiasi URL gli venga passato: senza controlli, qualcuno
+potrebbe farlo puntare a `localhost`, a un IP della rete interna del container, o a
+indirizzi riservati usati dai provider cloud per esporre dati sensibili della macchina.
+Questo modulo controlla, prima di procedere, che l'URL non porti a uno di questi posti.
+"""
 
 import asyncio
 import ipaddress
@@ -22,9 +28,12 @@ def _is_unsafe_ip(ip: str) -> bool:
 
 
 async def is_safe_url(url: str) -> bool:
-    """False se l'host dell'URL risolve (anche solo parzialmente) a un IP privato/riservato/loopback.
+    """True se l'host dell'URL punta solo a indirizzi IP pubblici.
 
-    Copre anche l'endpoint di metadata cloud (169.254.169.254, in range link-local).
+    Risolve il nome host in uno o più IP (un host può risolvere a più indirizzi) e li
+    controlla tutti: se anche uno solo è privato, interno, o riservato, la funzione
+    ritorna False. Questo copre anche l'indirizzo 169.254.169.254, usato da AWS/GCP/Azure
+    per esporre metadati (a volte credenziali) della macchina che esegue il container.
     """
     hostname = urlparse(url).hostname
     if not hostname:

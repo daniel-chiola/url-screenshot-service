@@ -42,7 +42,7 @@ def _to_detail(job: Job) -> JobDetail:
 
 @app.get("/health")
 def health() -> dict:
-    """Liveness check del servizio."""
+    """Dice se il servizio è attivo (usato per i controlli di stato automatici)."""
     return {"status": "ok"}
 
 

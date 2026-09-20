@@ -4,6 +4,9 @@ __pycache__/
 # Screenshot output
 screenshots/*
 !screenshots/.gitkeep
+
+# Report di test
+test-reports/
 *.py[codz]
 *$py.class
 

@@ -3,6 +3,7 @@
 README.md
 LICENSE
 screenshots/
+test-reports/
 __pycache__/
 *.pyc
 .venv/

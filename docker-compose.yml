@@ -1,7 +1,17 @@
 services:
   screenshot-service:
-    build: .
+    build:
+      context: .
+      target: runtime
     ports:
       - "8000:8000"
     volumes:
       - ./screenshots:/app/screenshots
+
+  tests:
+    build:
+      context: .
+      target: test
+    profiles: ["test"]
+    volumes:
+      - ./test-reports:/app/test-reports

@@ -15,3 +15,23 @@ dependencies = [
 
 [tool.uv]
 package = false
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "pytest-html>=4.2.0",
+]
+
+[tool.pytest.ini_options]
+# Aggiunge la cartella del progetto a sys.path, così i test possono fare
+# "from app import ..." indipendentemente da dove/come viene lanciato pytest.
+pythonpath = ["."]
+
+[tool.coverage.run]
+# Misura solo il codice applicativo, non i test stessi.
+source = ["app"]
+
+[tool.coverage.report]
+# Nell'output a terminale, elenca anche i numeri di riga non coperti.
+show_missing = true
