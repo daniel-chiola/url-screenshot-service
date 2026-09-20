@@ -2,9 +2,9 @@ import logging
 import os
 
 from fastapi import FastAPI
-from pydantic import BaseModel, HttpUrl
 
 from app.config import SCREENSHOTS_DIR
+from app.schemas import ScreenshotRequest, ScreenshotResponse
 from app.screenshot import capture_screenshot
 from app.utils import url_to_filename
 
@@ -14,16 +14,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="URL Screenshot Service")
 
 
-class ScreenshotRequest(BaseModel):
-    url: HttpUrl
-
-
-class ScreenshotResponse(BaseModel):
-    filename: str
-    path: str
-
-
-@app.on_event("startup")
+@app.lifespan("startup")
 def ensure_screenshots_dir() -> None:
     os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
@@ -35,5 +26,7 @@ def health() -> dict:
 
 @app.post("/screenshot", response_model=ScreenshotResponse)
 async def screenshot(request: ScreenshotRequest) -> ScreenshotResponse:
-    # TODO: generare il filename, chiamare capture_screenshot, gestire errori/logging
-    raise NotImplementedError
+    filename = url_to_filename(request.url)
+    output_path = os.path.join(SCREENSHOTS_DIR, filename)
+    capture_screenshot(request.url, output_path)
+    return ScreenshotResponse(filename=filename, path=output_path)
