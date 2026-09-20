@@ -2,13 +2,16 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
-from app.config import SCREENSHOTS_DIR
-from app.schemas import ScreenshotRequest, ScreenshotResponse
-from app.screenshot import capture_screenshot
-from app.utils import is_reachable, url_to_filename
+from app import jobs
+from app.config import RATE_LIMIT, SCREENSHOTS_DIR
+from app.jobs import Job
+from app.schemas import JobDetail, JobResponse, ScreenshotRequest
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,7 +20,21 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
 
+limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(title="URL Screenshot Service")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+def _to_detail(job: Job) -> JobDetail:
+    return JobDetail(
+        id=job.id,
+        url=job.url,
+        status=job.status,
+        filename=job.filename,
+        error=job.error,
+        created_at=job.created_at,
+    )
 
 
 @app.get("/health")
@@ -25,17 +42,28 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/screenshot", response_model=ScreenshotResponse)
-async def screenshot(request: ScreenshotRequest) -> ScreenshotResponse:
-    url = str(request.url)
-    if not await is_reachable(url):
-        logger.warning("URL non raggiungibile: %s", url)
-        raise HTTPException(status_code=422, detail=f"URL non raggiungibile: {url}")
+@app.post("/screenshot", response_model=JobResponse, status_code=202)
+@limiter.limit(RATE_LIMIT)
+async def submit_screenshot(
+    request: Request, payload: ScreenshotRequest, background_tasks: BackgroundTasks
+) -> JobResponse:
+    url = str(payload.url)
+    job = jobs.create_job(url)
+    background_tasks.add_task(jobs.process_job, job.id)
+    return JobResponse(id=job.id, status=job.status)
 
-    filename = url_to_filename(url)
-    output_path = os.path.join(SCREENSHOTS_DIR, filename)
-    await capture_screenshot(url, output_path)
-    return ScreenshotResponse(filename=filename, path=output_path)
+
+@app.get("/screenshot/{job_id}", response_model=JobDetail)
+def get_screenshot_status(job_id: str) -> JobDetail:
+    job = jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job non trovato")
+    return _to_detail(job)
+
+
+@app.get("/jobs", response_model=list[JobDetail])
+def list_jobs() -> list[JobDetail]:
+    return [_to_detail(job) for job in jobs.list_jobs()]
 
 
 app.mount("/screenshots", StaticFiles(directory=SCREENSHOTS_DIR), name="screenshots")
