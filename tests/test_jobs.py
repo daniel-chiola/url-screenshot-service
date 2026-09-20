@@ -163,7 +163,7 @@ async def test_process_job_cattura_riuscita(monkeypatch):
 
     updated = await jobs.get_job(job.id)
     assert updated.status == "done"
-    assert updated.filename == "screenshot_example_com.png"
+    assert updated.filename == "screenshot_example_com.jpeg"
 
 
 async def test_process_job_cattura_fallita(monkeypatch):
