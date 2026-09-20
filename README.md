@@ -45,11 +45,22 @@ uv run playwright install chromium --with-deps       # installa il browser
 uv run --env-file .env uvicorn app.main:app --reload
 ```
 
+`uv sync` legge `pyproject.toml`/`uv.lock` e installa tutto dentro `.venv/` (creato automaticamente): non serve attivare manualmente un virtual environment, né usare `pip install`.
+
+### Aggiungere una dipendenza
+
+```bash
+uv add <nome-pacchetto>          # dipendenza del servizio (es. una nuova libreria usata da app/)
+uv add --dev <nome-pacchetto>    # dipendenza solo per i test/sviluppo (es. un plugin di pytest)
+```
+
+`uv add` aggiorna sia `pyproject.toml` che `uv.lock` e installa subito il pacchetto in `.venv/`. Per rimuoverne una: `uv remove <nome-pacchetto>` (o `uv remove <nome-pacchetto> --group dev` se era stata aggiunta con `--dev`). Con Docker non serve fare nulla in più: l'immagine viene ricostruita da `pyproject.toml`/`uv.lock` al prossimo `docker compose up -d --build`.
+
 ## Come provarlo
 
 ### 1. Interfaccia web (il modo più semplice)
 
-Apri **`http://localhost:8000`**: un form per inviare un URL, e sotto una tabella con tutti i job e il loro stato in tempo reale.
+Apri **`http://localhost:8000`**: un form per inviare un URL, sotto una tabella con tutti i job e il loro stato in tempo reale, e un pannello con le metriche (job completati, in errore, tempo medio di completamento).
 
 ### 2. Documentazione interattiva
 
@@ -78,6 +89,9 @@ curl http://localhost:8000/jobs
 
 # Scarica lo screenshot generato
 curl -o out.png http://localhost:8000/screenshots/screenshot_www_google_com.png
+
+# Metriche: quanti job completati, quanti in errore, tempo medio di completamento
+curl http://localhost:8000/stats
 ```
 
 > Se hai impostato `API_KEY`, aggiungi `-H "X-API-Key: <la-tua-chiave>"` a ogni richiesta (tranne `/health`).
@@ -138,14 +152,14 @@ Se un job finisce in `error` (es. sito irraggiungibile), resta salvato con l'err
 
 ## Componenti principali
 
-- **`app/main.py`** — il server FastAPI: espone gli endpoint (`/screenshot`, `/jobs`, ecc.), controlla che l'URL sia sicuro, limita quante richieste può fare un client di seguito.
+- **`app/main.py`** — il server FastAPI: espone gli endpoint (`/screenshot`, `/jobs`, `/stats`, ecc.), controlla che l'URL sia sicuro, limita quante richieste può fare un client di seguito.
 - **`app/jobs.py`** — la "regia": per ogni job, controlla che l'URL risponda, chiama Playwright per lo screenshot, aggiorna lo stato (`pending` → `processing` → `done`/`error`).
 - **`app/db.py`** — salva e legge i job da un file SQLite (`./data/jobs.db`), così sopravvivono a un riavvio del container.
 - **`app/screenshot.py`** — apre la pagina con Chromium (Playwright) e cattura l'immagine. Se la pagina impiega troppo a caricare, riprova automaticamente un paio di volte.
 - **`app/security.py`** — controlla che l'URL richiesto non punti a un indirizzo "interno" (vedi sezione [Sicurezza](#sicurezza) sotto).
 - **`app/utils.py`** — un paio di funzioni di supporto: genera il nome del file dello screenshot dall'URL, e controlla se un sito risponde prima di aprire il browser (più leggero che avviare Chromium per niente).
 - **`app/config.py`** — tutte le impostazioni del servizio (letture da variabili d'ambiente), in un unico punto.
-- **`app/static/index.html`** — una piccola pagina web per usare il servizio dal browser senza scrivere codice: un form per inviare un URL e una tabella che mostra tutti i job.
+- **`app/static/index.html`** — una piccola pagina web per usare il servizio dal browser senza scrivere codice: un form per inviare un URL, una tabella che mostra tutti i job e un pannello con le metriche da `/stats`.
 
 ## Sicurezza
 
@@ -218,5 +232,5 @@ Cose che lascerei fuori scope per questo progetto, ma che avrebbero senso se dov
 
 - **Storage su cloud (es. S3)** invece che su disco locale: utile se il servizio dovesse girare su più container contemporaneamente, che oggi non potrebbero condividere la stessa cartella.
 - **Autenticazione più solida** (es. OAuth2/JWT) al posto della semplice chiave API, se il servizio venisse esposto a più utenti con permessi diversi.
-- **Metriche e osservabilità** (es. Prometheus/Grafana): oggi si vede solo se il servizio è su o giù (`/health`), non quanto impiegano le catture o quanti errori ci sono nel tempo.
+- **Metriche più complete** (es. Prometheus/Grafana): `GET /stats` oggi copre solo l'essenziale (job completati, in errore, tempo medio di completamento), letto direttamente da SQLite — niente storico nel tempo, solo lo stato attuale. Per quello servirebbe un sistema di monitoring vero e proprio, fuori scope per questo progetto (vedi sopra perché non l'ho aggiunto).
 - **Test end-to-end con un browser reale**: la suite attuale non apre mai davvero Chromium (per restare veloce e affidabile); un secondo livello di test, più lento, potrebbe verificare anche quella parte.
