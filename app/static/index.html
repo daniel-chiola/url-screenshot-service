@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <title>URL Screenshot Service</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    form { display: flex; gap: 0.5rem; }
+    input[type="url"] { flex: 1; padding: 0.5rem; font-size: 1rem; }
+    button { padding: 0.5rem 1rem; font-size: 1rem; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: default; }
+    #status { margin-top: 1rem; color: #666; }
+    #error { margin-top: 1rem; color: #b00020; }
+    #result { margin-top: 1.5rem; }
+    #result img { max-width: 100%; border: 1px solid #ccc; }
+  </style>
+</head>
+<body>
+  <h1>URL Screenshot Service</h1>
+  <form id="screenshot-form">
+    <input type="url" id="url-input" placeholder="https://example.com" required>
+    <button type="submit" id="submit-btn">Cattura screenshot</button>
+  </form>
+  <div id="status"></div>
+  <div id="error"></div>
+  <div id="result"></div>
+
+  <script>
+    const form = document.getElementById("screenshot-form");
+    const submitBtn = document.getElementById("submit-btn");
+    const status = document.getElementById("status");
+    const error = document.getElementById("error");
+    const result = document.getElementById("result");
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const url = document.getElementById("url-input").value;
+
+      submitBtn.disabled = true;
+      status.textContent = "Cattura in corso...";
+      error.textContent = "";
+      result.innerHTML = "";
+
+      try {
+        const response = await fetch("/screenshot", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url }),
+        });
+
+        if (!response.ok) {
+          const detail = await response.json().catch(() => null);
+          throw new Error(detail?.detail || `Errore ${response.status}`);
+        }
+
+        const data = await response.json();
+        status.textContent = `Salvato come ${data.filename}`;
+        result.innerHTML = `<img src="/screenshots/${data.filename}?t=${Date.now()}" alt="${data.filename}">`;
+      } catch (err) {
+        status.textContent = "";
+        error.textContent = err.message;
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
