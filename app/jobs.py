@@ -6,7 +6,6 @@ recuperato con retry_job() invece di essere perso per sempre.
 """
 
 import asyncio
-import logging
 import os
 import uuid
 from dataclasses import dataclass, field
@@ -14,10 +13,9 @@ from datetime import datetime, timezone
 
 from app.config import MAX_CONCURRENT_CAPTURES, SCREENSHOTS_DIR
 from app.db import db
+from app.logger import app_logger
 from app.screenshot import capture_screenshot
 from app.utils import is_reachable, url_to_filename
-
-logger = logging.getLogger(__name__)
 
 _capture_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CAPTURES)
 
@@ -88,6 +86,7 @@ async def create_job(
             "created_at": job.created_at,
         }
     )
+    app_logger.job_created(job.id, job.url)
     return job
 
 
@@ -119,6 +118,7 @@ async def retry_job(job_id: str) -> Job | None:
     if job is None or job.status != "error":
         return None
     await db.update(job_id, status="pending", error=None, filename=None)
+    app_logger.job_retried(job_id)
     return await get_job(job_id)
 
 
@@ -126,14 +126,14 @@ async def process_job(job_id: str) -> None:
     """Esegue la verifica di raggiungibilità e la cattura per un job, aggiornandone lo stato."""
     job = await get_job(job_id)
     if job is None:
-        logger.error("Job %s: non trovato, impossibile processarlo", job_id)
+        app_logger.job_not_found(job_id)
         return
 
     await db.update(job_id, status="processing")
 
     if not await is_reachable(job.url):
         await db.update(job_id, status="error", error="URL non raggiungibile")
-        logger.warning("Job %s: URL non raggiungibile (%s)", job_id, job.url)
+        app_logger.job_unreachable(job_id, job.url)
         return
 
     filename = url_to_filename(job.url)
@@ -152,8 +152,8 @@ async def process_job(job_id: str) -> None:
             )
         except Exception as e:
             await db.update(job_id, status="error", error=str(e))
-            logger.error("Job %s: errore durante la cattura (%s)", job_id, e)
+            app_logger.job_failed(job_id, str(e))
             return
 
     await db.update(job_id, status="done", filename=filename)
-    logger.info("Job %s: completato (%s)", job_id, filename)
+    app_logger.job_done(job_id, filename)
