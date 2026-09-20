@@ -32,9 +32,9 @@ RUN uv sync --frozen --no-dev --no-cache
 # Copiamo il codice dell'applicazione
 COPY app ./app
 
-# Creiamo la cartella per gli screenshot e assegniamo la proprietà a 'pwuser'
-# (pwuser è l'utente non-root preconfigurato nell'immagine di Playwright)
-RUN mkdir -p /app/screenshots && chown -R pwuser:pwuser /app
+# Creiamo le cartelle per screenshot e DB persistito, e ne assegnamo la proprietà
+# a 'pwuser' (l'utente non-root preconfigurato nell'immagine di Playwright)
+RUN mkdir -p /app/screenshots /app/data && chown -R pwuser:pwuser /app
 
 EXPOSE 8000
 
