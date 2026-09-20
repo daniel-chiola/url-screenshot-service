@@ -48,7 +48,14 @@ async def submit_screenshot(
     request: Request, payload: ScreenshotRequest, background_tasks: BackgroundTasks
 ) -> JobResponse:
     url = str(payload.url)
-    job = jobs.create_job(url)
+    job = jobs.create_job(
+        url,
+        width=payload.width,
+        height=payload.height,
+        full_page=payload.full_page,
+        dark_mode=payload.dark_mode,
+        block_ads=payload.block_ads,
+    )
     background_tasks.add_task(jobs.process_job, job.id)
     return JobResponse(id=job.id, status=job.status)
 

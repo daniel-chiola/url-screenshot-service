@@ -1,10 +1,13 @@
 from pydantic import BaseModel, HttpUrl
 
-
 class ScreenshotRequest(BaseModel):
     """Corpo della richiesta POST /screenshot."""
-
     url: HttpUrl
+    width: int = 1280
+    height: int = 800
+    full_page: bool = False
+    dark_mode: bool = False
+    block_ads: bool = True
 
 
 class JobResponse(BaseModel):
