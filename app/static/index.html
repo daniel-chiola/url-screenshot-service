@@ -25,6 +25,7 @@
     .badge-pending, .badge-processing { background: #fff3cd; color: #856404; }
     .badge-done { background: #d4edda; color: #155724; }
     .badge-error { background: #f8d7da; color: #721c24; }
+    .retry-btn { margin-left: 0.5rem; padding: 0.15rem 0.5rem; font-size: 0.8rem; }
   </style>
 </head>
 <body>
@@ -148,7 +149,8 @@
         if (job.status === "done" && job.filename) {
           resultCell = `<a href="/screenshots/${encodeURIComponent(job.filename)}" target="_blank">apri</a>`;
         } else if (job.status === "error") {
-          resultCell = escapeHtml(job.error || "");
+          const jobId = escapeHtml(job.id);
+          resultCell = `${escapeHtml(job.error || "")} <button class="retry-btn" data-job-id="${jobId}">Riprova</button>`;
         }
         return `<tr>
           <td>${escapeHtml(job.url)}</td>
@@ -158,6 +160,26 @@
         </tr>`;
       }).join("");
     }
+
+    jobsBody.addEventListener("click", async (e) => {
+      if (!e.target.classList.contains("retry-btn")) return;
+      const jobId = e.target.dataset.jobId;
+
+      e.target.disabled = true;
+      error.textContent = "";
+
+      try {
+        const response = await fetch(`/screenshot/${jobId}/retry`, { method: "POST" });
+        if (!response.ok) {
+          const detail = await response.json().catch(() => null);
+          throw new Error(detail?.detail || `Errore ${response.status}`);
+        }
+        await refreshJobs();
+      } catch (err) {
+        error.textContent = err.message;
+        e.target.disabled = false;
+      }
+    });
 
     async function refreshJobs() {
       try {
