@@ -1,9 +1,15 @@
 """Test app/main.py."""
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import jobs, main
 from app.main import app
+
+# Applica il marker "anyio" a tutte le funzioni async di questo file (TestClient
+# resta comunque sincrono da chiamare, anche dentro un test async: fa da ponte
+# lui stesso verso l'app asincrona, non serve mai "await" sulle sue chiamate).
+pytestmark = pytest.mark.anyio
 
 client = TestClient(app)
 
@@ -18,9 +24,9 @@ def test_get_screenshot_not_found():
     response = client.get("/screenshot/nonexistent-id")
     assert response.status_code == 404
 
-def test_get_screenshot_found():
+async def test_get_screenshot_found():
     """GET /screenshot/{id} con id esistente torna 200 OK con i dettagli del job."""
-    job = jobs.create_job("https://www.example.com")
+    job = await jobs.create_job("https://www.example.com")
 
     response = client.get(f"/screenshot/{job.id}")
     assert response.status_code == 200
@@ -29,10 +35,10 @@ def test_get_screenshot_found():
     assert data["url"] == job.url
     assert data["status"] == job.status
 
-def test_get_jobs_list():
+async def test_get_jobs_list():
     """GET /jobs torna 200 OK con la lista dei job, più recente per primo."""
-    job1 = jobs.create_job("https://www.example.com")
-    job2 = jobs.create_job("https://www.example.org")
+    job1 = await jobs.create_job("https://www.example.com")
+    job2 = await jobs.create_job("https://www.example.org")
 
     response = client.get("/jobs")
     assert response.status_code == 200
@@ -141,3 +147,49 @@ def test_health_pubblico_anche_con_api_key_configurata(monkeypatch):
     response = client.get("/health")
 
     assert response.status_code == 200
+
+
+# --- POST /screenshot/{id}/retry ---
+
+
+def test_retry_screenshot_job_inesistente():
+    """POST /screenshot/{id}/retry con id sconosciuto torna 404."""
+    response = client.post("/screenshot/id-che-non-esiste/retry")
+    assert response.status_code == 404
+
+async def test_retry_screenshot_job_non_in_errore():
+    """POST /screenshot/{id}/retry su un job non in stato 'error' torna 404."""
+    job = await jobs.create_job("https://www.example.com")  # resta 'pending'
+
+    response = client.post(f"/screenshot/{job.id}/retry")
+
+    assert response.status_code == 404
+
+async def test_retry_screenshot_rimette_in_coda_un_job_fallito(monkeypatch):
+    """POST /screenshot/{id}/retry su un job fallito lo rimette in coda e lo riprocessa."""
+    async def fake_is_reachable_ko(url):
+        return False
+
+    monkeypatch.setattr(jobs, "is_reachable", fake_is_reachable_ko)
+
+    job = await jobs.create_job("https://esempio-morto.com")
+    await jobs.process_job(job.id)  # lo porta in stato 'error'
+
+    async def fake_is_reachable_ok(url):
+        return True
+
+    async def fake_capture_screenshot(url, output_path, **kwargs):
+        pass
+
+    monkeypatch.setattr(jobs, "is_reachable", fake_is_reachable_ok)
+    monkeypatch.setattr(jobs, "capture_screenshot", fake_capture_screenshot)
+
+    response = client.post(f"/screenshot/{job.id}/retry")
+
+    assert response.status_code == 202
+    data = response.json()
+    assert data["id"] == job.id
+
+    updated = await jobs.get_job(job.id)
+    assert updated.status == "done"
+    assert updated.error is None
