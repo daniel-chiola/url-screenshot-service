@@ -26,6 +26,10 @@
     .badge-done { background: #d4edda; color: #155724; }
     .badge-error { background: #f8d7da; color: #721c24; }
     .retry-btn { margin-left: 0.5rem; padding: 0.15rem 0.5rem; font-size: 0.8rem; }
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.75rem; margin-top: 1rem; }
+    .stat-card { background: #f7f7f7; border: 1px solid #eee; border-radius: 8px; padding: 0.75rem 1rem; }
+    .stat-label { font-size: 0.75rem; color: #666; text-transform: uppercase; letter-spacing: 0.03em; }
+    .stat-value { font-size: 1.4rem; font-weight: 600; margin-top: 0.15rem; }
   </style>
 </head>
 <body>
@@ -61,6 +65,22 @@
     </thead>
     <tbody id="jobs-body"></tbody>
   </table>
+
+  <h2>Metriche</h2>
+  <div class="stats-grid" id="metrics">
+    <div class="stat-card">
+      <div class="stat-label">Completati</div>
+      <div class="stat-value" id="done-jobs">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">In errore</div>
+      <div class="stat-value" id="error-jobs">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Tempo medio di completamento</div>
+      <div class="stat-value" id="avg-completion">-</div>
+    </div>
+  </div>
 
   <script>
     const form = document.getElementById("screenshot-form");
@@ -193,6 +213,32 @@
 
     refreshJobs();
     setInterval(refreshJobs, 2000);
+
+    const metricsEls = {
+      doneJobs: document.getElementById("done-jobs"),
+      errorJobs: document.getElementById("error-jobs"),
+      avgCompletion: document.getElementById("avg-completion"),
+    };
+
+    function formatSeconds(value) {
+      return value === null || value === undefined ? "-" : `${value.toFixed(2)}s`;
+    }
+
+    async function refreshStats() {
+      try {
+        const response = await fetch("/stats");
+        const data = await response.json();
+        metricsEls.doneJobs.textContent = data.done_jobs;
+        metricsEls.errorJobs.textContent = data.error_jobs;
+        metricsEls.avgCompletion.textContent = formatSeconds(data.avg_completion_seconds);
+      } catch (err) {
+        // le metriche sono un extra informativo: un errore qui non deve bloccare il resto della UI
+      }
+    }
+
+    // Nessun polling automatico qui: le metriche si aggiornano solo al caricamento
+    // della pagina, per non moltiplicare le richieste oltre al polling già attivo su /jobs.
+    refreshStats();
   </script>
 </body>
 </html>
