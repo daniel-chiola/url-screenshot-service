@@ -1,3 +1,5 @@
+"""Modelli Pydantic per request/response degli endpoint di screenshot."""
+
 from pydantic import BaseModel, HttpUrl
 
 class ScreenshotRequest(BaseModel):

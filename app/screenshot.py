@@ -1,3 +1,5 @@
+"""Cattura screenshot di pagine web con Chromium headless (Playwright)."""
+
 from playwright.async_api import Route
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright

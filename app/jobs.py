@@ -1,3 +1,5 @@
+"""Coda in-memory dei job di screenshot: creazione, stato e processamento in background."""
+
 import asyncio
 import logging
 import os

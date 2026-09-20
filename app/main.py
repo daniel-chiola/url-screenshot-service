@@ -1,3 +1,5 @@
+"""API REST che riceve un URL, accoda una cattura screenshot in background e ne espone lo stato."""
+
 import logging
 import os
 from pathlib import Path
@@ -39,6 +41,7 @@ def _to_detail(job: Job) -> JobDetail:
 
 @app.get("/health")
 def health() -> dict:
+    """Liveness check del servizio."""
     return {"status": "ok"}
 
 
@@ -47,6 +50,7 @@ def health() -> dict:
 async def submit_screenshot(
     request: Request, payload: ScreenshotRequest, background_tasks: BackgroundTasks
 ) -> JobResponse:
+    """Accoda la cattura di uno screenshot e torna subito l'id del job."""
     url = str(payload.url)
     job = jobs.create_job(
         url,
@@ -62,6 +66,7 @@ async def submit_screenshot(
 
 @app.get("/screenshot/{job_id}", response_model=JobDetail)
 def get_screenshot_status(job_id: str) -> JobDetail:
+    """Stato di un job di screenshot."""
     job = jobs.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job non trovato")
@@ -70,6 +75,7 @@ def get_screenshot_status(job_id: str) -> JobDetail:
 
 @app.get("/jobs", response_model=list[JobDetail])
 def list_jobs() -> list[JobDetail]:
+    """Coda dei job, dal più recente al più vecchio."""
     return [_to_detail(job) for job in jobs.list_jobs()]
 
 
