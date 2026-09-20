@@ -1,6 +1,5 @@
 """API REST che riceve un URL, accoda una cattura screenshot in background e ne espone lo stato."""
 
-import logging
 import os
 from pathlib import Path
 from typing import Annotated
@@ -14,11 +13,9 @@ from slowapi.util import get_remote_address
 from app import jobs
 from app.config import API_KEY, RATE_LIMIT, SCREENSHOTS_DIR
 from app.jobs import Job
+from app.logger import app_logger
 from app.schemas import JobDetail, JobResponse, ScreenshotRequest
 from app.security import is_safe_url
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -30,11 +27,12 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
-async def require_api_key(x_api_key: Annotated[str | None, Header()] = None) -> None:
+async def require_api_key(request: Request, x_api_key: Annotated[str | None, Header()] = None) -> None:
     """Verifica l'header X-API-Key sugli endpoint funzionali (non su /health)."""
     if not API_KEY:
         return  # nessuna API_KEY configurata: autenticazione disattivata
     if x_api_key != API_KEY:
+        app_logger.auth_failed(request.url.path)
         raise HTTPException(status_code=401, detail="API key mancante o non valida")
 
 
@@ -71,7 +69,7 @@ async def submit_screenshot(
     """Accoda la cattura di uno screenshot e torna subito l'id del job."""
     url = str(payload.url)
     if not await is_safe_url(url):
-        logger.warning("URL bloccato (protezione SSRF): %s", url)
+        app_logger.ssrf_blocked(url)
         raise HTTPException(status_code=403, detail="URL non consentito (indirizzo privato o riservato)")
 
     job = await jobs.create_job(
