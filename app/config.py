@@ -17,3 +17,6 @@ RATE_LIMIT = os.getenv("RATE_LIMIT", "5/minute")
 # Se lasciata vuota (default), l'autenticazione è disattivata: comodo per
 # provare il servizio in locale, ma va impostata per qualsiasi uso reale.
 API_KEY = os.getenv("API_KEY", "")
+
+# Livello minimo dei log stampati (DEBUG, INFO, WARNING, ERROR). INFO di default.
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
