@@ -4,6 +4,9 @@ import os
 
 SCREENSHOTS_DIR = os.getenv("SCREENSHOTS_DIR", "/app/screenshots")
 
+# File SQLite in cui viene persistita la coda dei job: sopravvive ai riavvii del container.
+DB_PATH = os.getenv("DB_PATH", "/app/data/jobs.db")
+
 # Numero massimo di catture Playwright eseguite in parallelo (protegge la memoria del container)
 MAX_CONCURRENT_CAPTURES = int(os.getenv("MAX_CONCURRENT_CAPTURES", "2"))
 
