@@ -4,233 +4,85 @@
 
 Servizio containerizzato che riceve un URL via API REST, genera uno screenshot della pagina con Chromium headless (Playwright) e lo salva su file.
 
-## Architettura
-
-Il servizio è **asincrono**: `POST /screenshot` non aspetta che la cattura sia completata. Accoda un job in background e risponde subito con un id; lo stato si interroga poi con `GET /screenshot/{id}` (o si osserva l'intera coda con `GET /jobs`).
-
-```
-Browser (UI su "/")  ──┐
-                        │  POST /screenshot {"url": "..."}
-Client (curl / Swagger UI) ──┤
-                        ▼
-                FastAPI (app/main.py)
-                        │  valida l'URL, rate limit per IP (slowapi)
-                        │  blocca IP privati/riservati (app/security.py) → 403 se non sicuro
-                        │  crea il job (app/jobs.py) → 202 {"id", "status": "pending"}
-                        │  schedula process_job() in BackgroundTasks
-                        ▼
-                app/jobs.py — process_job()
-                        │  verifica raggiungibilità via HTTP (app/utils.py)
-                        │    └─ non raggiungibile → job in stato "error"
-                        │  deriva il nome file (app/utils.py)
-                        │  semaforo: max N catture Playwright in parallelo
-                        ▼
-        Playwright / Chromium headless (app/screenshot.py)
-                        │  ri-verifica ogni navigazione/redirect (protezione SSRF)
-                        │  apre la pagina, cattura lo screenshot
-                        │  (retry con backoff esponenziale sui timeout)
-                        ▼
-        Filesystem — ./screenshots (volume Docker) — job → stato "done"
-                        │
-                        ▼  servito come statico su GET /screenshots/<file>
-     Browser (polling su GET /screenshot/{id} e GET /jobs, mostra risultato e coda)
-
-Ad ogni passaggio di stato, app/jobs.py scrive su SQLite (app/db.py, volume ./data):
-la coda sopravvive a un riavvio del container. Un job finito in "error" può essere
-rimesso in coda dall'utente con POST /screenshot/{id}/retry (anche dalla UI).
-```
-
-Componenti:
-
-- **FastAPI** ([app/main.py](app/main.py)): espone `POST /screenshot` (crea un job e torna `202` con `{id, status}`), `GET /screenshot/{id}` (stato di un job), `POST /screenshot/{id}/retry` (rimette in coda un job fallito), `GET /jobs` (coda completa) e `GET /health`. Il rate limit (`slowapi`) protegge `POST /screenshot` e il retry da richieste eccessive per IP.
-- **Coda dei job** ([app/jobs.py](app/jobs.py)): orchestrazione (`process_job()`: verifica raggiungibilità, derivazione nome file, cattura) e stato (`pending` → `processing` → `done`/`error`). Un `asyncio.Semaphore` limita quante catture Playwright girano in parallelo, indipendentemente dal rate limit sulle richieste in ingresso. Non tiene più nulla in memoria: ogni lettura/scrittura passa da `app/db.py`.
-- **Persistenza** ([app/db.py](app/db.py)): i job sono salvati su SQLite (libreria `sqlite3` della stdlib, nessuna dipendenza esterna), un file montato come volume (`./data`) — sopravvivono a un riavvio o una ricreazione del container. `retry_job()` rimette in `pending` un job in `error`, ripulendo errore e filename.
-- **Playwright (Chromium headless)** ([app/screenshot.py](app/screenshot.py)): apre la pagina e cattura lo screenshot, con retry automatico (`tenacity`, backoff esponenziale, max 3 tentativi) sui timeout di navigazione.
-- **app/utils.py**: deriva un nome file sicuro dall'URL (es. `https://google.com` → `screenshot_google_com.png`) e verifica la raggiungibilità dell'URL via HTTP (`is_reachable`) prima di avviare il browser.
-- **app/security.py**: protezione SSRF (`is_safe_url`) — risolve l'host via DNS e blocca IP privati, loopback, link-local (incluso l'endpoint di metadata cloud `169.254.169.254`), riservati o multicast.
-- **app/config.py**: configurazione centralizzata (directory di output, limite di concorrenza, rate limit — tutti letti da env var).
-- **UI web minimale** ([app/static/index.html](app/static/index.html)): pagina HTML/JS vanilla servita su `GET /`. Form per inviare un URL con le opzioni di cattura (polling automatico sul job fino al risultato) e tabella che mostra l'intera coda in tempo reale.
-- **Opzioni di cattura personalizzabili**: `width`/`height` (viewport), `full_page` (pagina intera vs solo viewport), `dark_mode` (`prefers-color-scheme: dark`), `block_ads` (blocca via `page.route()` le richieste verso i principali network pubblicitari/di tracking). Configurabili sia via API (`ScreenshotRequest`) sia dalla UI.
-- **Volume Docker**: gli screenshot vengono salvati in `./screenshots` sull'host, montata nel container, così restano accessibili anche dopo lo stop del container. La stessa cartella è servita come file statici su `GET /screenshots/<filename>`.
-
-### Sicurezza
-
-Un servizio che va a fetchare URL arbitrari forniti dall'utente è per natura esposto a **SSRF** (Server-Side Request Forgery): senza controlli, potrebbe essere usato per raggiungere risorse interne alla rete del container (`localhost`, IP privati, endpoint di metadata cloud come `169.254.169.254`). Le difese implementate:
-
-- **Validazione base del formato URL** ([app/schemas.py](app/schemas.py)): il campo `url` di `ScreenshotRequest` è tipizzato `pydantic.HttpUrl`, quindi FastAPI/Pydantic rifiutano automaticamente con `422` qualsiasi valore non sia un URL http/https ben formato, prima ancora che il codice applicativo (incluso il controllo SSRF sotto) venga eseguito.
-- **Controllo all'ingresso** ([app/security.py](app/security.py), usato in [app/main.py](app/main.py)): prima di accodare qualunque job, l'host dell'URL viene risolto via DNS e ogni IP risultante viene verificato contro i range privati/loopback/link-local/riservati/multicast (modulo `ipaddress` della stdlib). Se anche un solo IP risolto è "non sicuro", la richiesta viene rifiutata con `403` — il job non viene nemmeno creato.
-- **Controllo ad ogni navigazione/redirect** ([app/screenshot.py](app/screenshot.py)): il solo controllo iniziale non basta, perché un URL pubblico può reindirizzare a un indirizzo interno *dopo* il controllo (bypass classico). Playwright viene istruito (`page.route()`) a ri-validare l'host di **ogni** richiesta di navigazione (incluso ogni hop di redirect) prima di lasciarla proseguire, non solo dell'URL iniziale.
-- **`is_reachable` senza follow-redirect** ([app/utils.py](app/utils.py)): il pre-check HTTP non segue più i redirect (`follow_redirects=False`) — un 3xx conta comunque come raggiungibile (`< 400`), quindi il risultato non cambia. Seguirli, però, permetterebbe di usare questo controllo per capire se un indirizzo interno risponde o no, prima ancora che scatti la protezione vera e propria in Playwright.
-- **Autenticazione via API key** ([app/main.py](app/main.py)): se la variabile `API_KEY` è impostata, `POST /screenshot`, `GET /screenshot/{id}` e `GET /jobs` richiedono l'header `X-API-Key` con il valore corretto, altrimenti `401`. `GET /health` resta sempre pubblico (è pensato per load balancer/orchestratori, che non hanno credenziali). Di default `API_KEY` è vuota e l'autenticazione è disattivata, per poter provare il servizio subito senza configurazione — va impostata per qualsiasi esposizione pubblica reale.
-- **Container non-root** ([Dockerfile](Dockerfile)): lo stage `runtime` esegue come `pwuser` (utente non privilegiato già presente nell'immagine Playwright), non come root — principio del minimo privilegio: se il servizio venisse compromesso, l'attaccante erediterebbe i permessi di un utente limitato, non di root. Vale anche per il processo Chromium lanciato da Playwright, non solo per il server web. L'interprete Python gestito da `uv` viene installato dentro `/app` (`UV_PYTHON_INSTALL_DIR`) invece che nella home di root, altrimenti `pwuser` non riuscirebbe nemmeno ad avviare l'app.
-
-**Limite noto, dichiarato onestamente**: resta un'esposizione teorica a DNS rebinding (l'host risolve a un IP pubblico al momento del controllo, poi il DNS cambia risposta prima della connessione effettiva). Chiuderlo del tutto richiederebbe pinnare l'IP risolto e usarlo direttamente per la connessione TCP (bypassando una seconda risoluzione DNS), cosa che Playwright non espone facilmente da API pubblica — non implementato per restare nello scope del progetto.
-
-### Scelte tecniche
-
-- **Playwright invece di Selenium**: API più moderna, gestione automatica dei binari del browser, supporto nativo async.
-- **`BackgroundTasks` invece di un broker esterno (Kafka/Redis)**: l'obiettivo era non far attendere il client durante la cattura, non costruire un sistema a eventi distribuito. `BackgroundTasks` risolve lo stesso problema restando nello stesso processo, senza infrastruttura aggiuntiva da configurare, testare e far girare in Docker — coerente con la scala di questo servizio (un solo worker, nessun bisogno di scalare orizzontalmente i consumer).
-- **SQLite (`sqlite3` della stdlib) invece di Postgres/SQLAlchemy per la persistenza dei job**: un file, zero servizi esterni da orchestrare in `docker-compose.yml`, coerente con la stessa motivazione che ha escluso Redis/Kafka per la coda — un servizio a singolo processo con un volume di scrittura basso (limitato da rate limit e semaforo) non ha bisogno di un database client-server. Ogni operazione apre/chiude la propria connessione (nessuna connessione condivisa da gestire tra coroutine), con la parte bloccante spostata in un thread (`asyncio.to_thread`), stesso pattern già usato in `app/security.py` per la risoluzione DNS.
-- **Rate limit (`slowapi`) + semaforo di concorrenza**: sono due protezioni distinte e complementari. Il rate limit impedisce che un client spammi richieste (per IP, configurabile). Il semaforo limita quante istanze di Chromium girano contemporaneamente, indipendentemente da quante richieste sono arrivate: protegge la memoria del container anche da un singolo client che manda molte richieste legittime in sequenza.
-- **Immagine base `mcr.microsoft.com/playwright/python`**: include già Chromium e tutte le dipendenze di sistema necessarie per l'headless, evitando di gestirle a mano nel Dockerfile.
-- **uv** per la gestione delle dipendenze Python (locale e nel Dockerfile), al posto di pip/requirements.txt: è scritto in Rust, quindi risoluzione e installazione delle dipendenze sono molto più veloci di pip (specialmente sulla cache, praticamente istantanee), oltre a offrire lock file (`uv.lock`) per build riproducibili e gestione integrata delle versioni di Python.
-- **Pre-check HTTP invece di ping ICMP**: un ping ICMP è spesso bloccato da firewall/provider cloud anche su siti perfettamente raggiungibili via HTTP, e richiede permessi elevati (socket raw) che il container non ha. Una richiesta `HEAD`/`GET` con timeout breve è più affidabile e coerente con ciò che Playwright farà comunque.
-- **`tenacity` per il retry automatico**: gestisce backoff esponenziale e condizioni di stop in modo testato, evitando di reimplementare a mano una logica facile da sbagliare (es. mancanza di jitter). Il retry è mirato solo ai timeout di Playwright, non agli URL già scartati dal pre-check.
-- **`POST /screenshot/{id}/retry` invece di una dead letter queue**: l'idea iniziale del progetto prevedeva una coda con DLQ (Redis Streams) per i job falliti. Con `BackgroundTasks` al posto di un broker esterno, una DLQ vera non ha un posto dove stare — reintrodurla solo per quello avrebbe contraddetto la scelta fatta sopra. Un endpoint di retry manuale sui job in `error` (già persistiti su SQLite, quindi non persi al riavvio) dà la stessa capacità di recupero, restando nello stesso modello architetturale.
-- **`HEALTHCHECK` Docker su `/health`** ([Dockerfile](Dockerfile)): Docker interroga il servizio ogni 30s e marca il container `healthy`/`unhealthy` (visibile con `docker ps`) — utile per orchestratori/monitoring che devono sapere se riavviare il container. Nota: se il processo `uvicorn` muore del tutto, il container esce direttamente (`Exited`), non passa per lo stato `unhealthy`, che si vede invece solo se il processo resta vivo ma smette di rispondere.
-
-## Struttura del progetto
-
-```
-.
-├── .github/
-│   └── workflows/
-│       └── ci.yml            # Pipeline CI: build + test ad ogni push
-├── app/
-│   ├── main.py           # FastAPI app, endpoint, rate limit ed export file statici
-│   ├── jobs.py             # Orchestrazione dei job, semaforo di concorrenza
-│   ├── db.py                # Persistenza dei job su SQLite
-│   ├── screenshot.py      # Logica di cattura screenshot (Playwright)
-│   ├── utils.py            # Derivazione nome file da URL, check raggiungibilità
-│   ├── security.py         # Protezione SSRF (blocco IP privati/riservati)
-│   ├── config.py           # Configurazione (directory output, rate limit, ecc.)
-│   ├── schemas.py          # Modelli Pydantic (request/response)
-│   └── static/
-│       └── index.html      # UI web minimale
-├── tests/                    # Test automatici (pytest) — fuori da app/, non entra nell'immagine di produzione
-├── screenshots/             # Output degli screenshot (montata come volume)
-├── data/                     # DB SQLite dei job (montata come volume, non versionato)
-├── test-reports/            # Report HTML dei test (generato, non versionato)
-├── Dockerfile                # Multi-stage: "runtime" (produzione) e "test"
-├── docker-compose.yml
-├── pyproject.toml           # Dipendenze del progetto (gestite con uv)
-└── uv.lock
-```
-
 ## Prerequisiti
 
-- Docker e Docker Compose (per l'esecuzione containerizzata) — [Docker Desktop](https://www.docker.com/products/docker-desktop/) o [OrbStack](https://orbstack.dev/) su macOS
-- [uv](https://docs.astral.sh/uv/) (solo per lo sviluppo locale, senza Docker). Per installarlo:
+- Docker e Docker Compose — [Docker Desktop](https://www.docker.com/products/docker-desktop/) o [OrbStack](https://orbstack.dev/) su macOS
+- [uv](https://docs.astral.sh/uv/), solo se vuoi eseguirlo senza Docker:
   ```bash
   curl -LsSf https://astral.sh/uv/install.sh | sh
   ```
 
-## Setup ed esecuzione
-
-Prima di tutto, scarica il progetto:
+## Come avviarlo
 
 ```bash
 git clone <url-di-questo-repository>
 cd url-screenshot-service
 ```
 
-Poi scegli una delle due strade sotto — non serve seguirle entrambe.
-
-### Con Docker (consigliato)
-
-Non serve installare Python, Playwright o nient'altro: build dell'immagine e avvio in background (`-d` = detached, il terminale torna libero):
+### Con Docker (consigliato — non serve installare nient'altro)
 
 ```bash
 docker compose up -d --build
 ```
 
-Il servizio sarà disponibile su `http://localhost:8000`. Gli screenshot generati vengono salvati nella cartella `./screenshots` sull'host.
+Il servizio sarà su `http://localhost:8000`. Gli screenshot generati finiscono nella cartella `./screenshots`.
 
 Altri comandi utili:
 
 ```bash
-# Vedere i log in tempo reale (utile per debug/errori)
-docker compose logs -f
-
-# Verificare che il container sia in esecuzione
-docker compose ps
-
-# Fermare il servizio
-docker compose down
-
-# Riavviare dopo una modifica al codice
-docker compose up -d --build
+docker compose logs -f      # vedere i log in tempo reale
+docker compose ps           # verificare che sia in esecuzione
+docker compose down         # fermarlo
+docker compose up -d --build  # riavviarlo dopo aver modificato il codice
 ```
 
-Se `docker compose up -d --build` fallisce, controlla che Docker Desktop/OrbStack sia avviato.
-
-### Sviluppo locale (senza Docker, con uv)
+### Senza Docker (con uv)
 
 ```bash
-# 1. Installa le dipendenze Python nel venv del progetto (.venv/)
-uv sync
-
-# 2. Installa il browser Chromium richiesto da Playwright
-uv run playwright install chromium --with-deps
-
-# 3. Avvia il server con reload automatico (SCREENSHOTS_DIR e DB_PATH: vedi nota sotto)
-SCREENSHOTS_DIR=./screenshots DB_PATH=./data/jobs.db uv run uvicorn app.main:app --reload
+cp .env.example .env                                 # percorsi validi per l'esecuzione in locale
+uv sync                                              # installa le dipendenze
+uv run playwright install chromium --with-deps       # installa il browser
+uv run --env-file .env uvicorn app.main:app --reload
 ```
 
-Il servizio sarà disponibile su `http://localhost:8000`.
+## Come provarlo
 
-> I default di `SCREENSHOTS_DIR` (`/app/screenshots`) e `DB_PATH` (`/app/data/jobs.db`) sono pensati per il filesystem del container. In locale vanno sovrascritti con percorsi esistenti, es. `./screenshots` e `./data/jobs.db` (vedi tabella [Configurazione](#configurazione)).
+### 1. Interfaccia web (il modo più semplice)
 
-## Test automatici
+Apri **`http://localhost:8000`**: un form per inviare un URL, e sotto una tabella con tutti i job e il loro stato in tempo reale.
 
-I test (pytest) girano in un container Docker separato, basato su uno stage dedicato del [Dockerfile](Dockerfile) (`test`) che non fa parte dell'immagine di produzione — le dipendenze di test (`pytest`, `pytest-cov`, `pytest-html`) non vengono quindi mai spedite nell'immagine che gira in produzione (stage `runtime`).
+### 2. Documentazione interattiva
 
-**CI**: la suite gira automaticamente ad ogni push su GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) — stesso identico comando usato in locale, nessuna duplicazione di logica tra ambiente locale e pipeline. Il badge in cima al README riflette l'esito dell'ultima esecuzione.
+Apri **`http://localhost:8000/docs`**: pagina generata automaticamente da FastAPI per provare ogni endpoint dal browser.
 
-```bash
-docker compose --profile test run --build --rm tests
-```
-
-Il `--build` è importante: senza, `docker compose run` riusa l'immagine già costruita in precedenza (se esiste), quindi dopo aver modificato il codice i risultati potrebbero riflettere una versione vecchia.
-
-Il container esegue la suite, genera due report in `test-reports/` (cartella montata sull'host, sopravvive alla chiusura del container) e si chiude da solo:
-- `test-reports/report.html` — esito di ogni test (pytest-html)
-- `test-reports/coverage/index.html` — percentuale di codice in `app/` effettivamente esercitata dai test, file per file (pytest-cov)
-
-Il servizio `tests` ha `profiles: ["test"]`, quindi non parte mai con un normale `docker compose up`.
-
-In locale, senza Docker:
+### 3. Da terminale (curl)
 
 ```bash
-uv run pytest                                    # solo i test
-uv run pytest --cov=app --cov-report=term-missing  # con coverage a terminale
-```
-
-**Nota sulla coverage di `app/screenshot.py` (~33%, deliberatamente basso)**: la logica che apre davvero Chromium e cattura lo screenshot (`capture_screenshot`) non viene mai eseguita per davvero nei test — viene sempre sostituita con un mock (vedi `tests/test_jobs.py`, `tests/test_main.py`), per tenere la suite veloce, deterministica e senza dipendenze da un browser vero. Non è un buco da colmare: alzare questa percentuale richiederebbe test di integrazione che aprono un browser reale, volutamente fuori dallo scope di questa suite.
-
-## Utilizzo e test manuale
-
-Una volta che il servizio è in esecuzione (`docker compose up -d --build`, oppure in locale con `uv`), puoi verificarlo in tre modi.
-
-### 1. UI web (il modo più rapido)
-
-Apri **`http://localhost:8000`** nel browser: form per inviare un URL (la pagina fa polling automatico e mostra lo screenshot appena pronto) e, sotto, una tabella con l'intera coda dei job in tempo reale.
-
-### 2. Documentazione interattiva (Swagger UI)
-
-Apri **`http://localhost:8000/docs`**: interfaccia auto-generata da FastAPI per esplorare e testare tutti gli endpoint (utile anche per vedere schema di request/response).
-
-### 3. Da riga di comando (curl)
-
-Health check — verifica rapida che il servizio sia su:
-
-```bash
+# Verifica che il servizio sia attivo
 curl http://localhost:8000/health
-# → {"status":"ok"}
-```
 
-Accodare una cattura (risposta immediata, `202`):
-
-```bash
+# Chiede uno screenshot (risponde subito con un id)
 curl -X POST http://localhost:8000/screenshot \
   -H "Content-Type: application/json" \
   -d '{"url": "https://www.google.com"}'
 # → {"id":"3f2...","status":"pending"}
+
+# Controlla lo stato con l'id ricevuto sopra
+curl http://localhost:8000/screenshot/3f2...
+
+# Rimanda in coda un job fallito
+curl -X POST http://localhost:8000/screenshot/3f2.../retry
+
+# Vede tutti i job
+curl http://localhost:8000/jobs
+
+# Scarica lo screenshot generato
+curl -o out.png http://localhost:8000/screenshots/screenshot_www_google_com.png
 ```
 
-> Se hai impostato `API_KEY`, aggiungi `-H "X-API-Key: <la-tua-chiave>"` a questa e alle altre richieste verso `/screenshot` e `/jobs` (non serve per `/health`), altrimenti la richiesta torna `401`.
+> Se hai impostato `API_KEY`, aggiungi `-H "X-API-Key: <la-tua-chiave>"` a ogni richiesta (tranne `/health`).
 
-Con opzioni personalizzate (tutte facoltative, i default sono quelli mostrati):
+Opzioni facoltative per la cattura (tutte hanno un default):
 
 ```bash
 curl -X POST http://localhost:8000/screenshot \
@@ -245,48 +97,126 @@ curl -X POST http://localhost:8000/screenshot \
   }'
 ```
 
-Interrogare lo stato del job (con l'id restituito sopra):
-
-```bash
-curl http://localhost:8000/screenshot/3f2...
-# → {"id":"3f2...","url":"https://www.google.com/","status":"done","filename":"screenshot_www_google_com.png","error":null,"created_at":"..."}
-```
-
-Rimettere in coda un job fallito (torna `404` se il job non esiste o non è in stato `error`):
-
-```bash
-curl -X POST http://localhost:8000/screenshot/3f2.../retry
-```
-
-Vedere l'intera coda:
-
-```bash
-curl http://localhost:8000/jobs
-```
-
-Recuperare l'immagine generata via HTTP (filename dallo stato del job):
-
-```bash
-curl -o out.png http://localhost:8000/screenshots/screenshot_www_google_com.png
-```
-
-### Verificare il file salvato su disco
-
-Con Docker, il volume espone la cartella sull'host, quindi:
-
-```bash
-ls -la screenshots/
-```
-
-deve mostrare il file appena generato.
-
 ## Configurazione
 
-| Variabile                | Default              | Descrizione                                  |
+| Variabile                | Default              | Cosa fa                                  |
 |---------------------------|----------------------|-----------------------------------------------|
-| `SCREENSHOTS_DIR`         | `/app/screenshots`   | Directory in cui vengono salvati gli screenshot |
-| `DB_PATH`                 | `/app/data/jobs.db`  | Percorso del file SQLite in cui è persistita la coda dei job |
-| `MAX_CONCURRENT_CAPTURES` | `2`                  | Numero massimo di catture Playwright in parallelo |
-| `RATE_LIMIT`              | `5/minute`           | Limite di richieste `POST /screenshot` per IP (sintassi `slowapi`) |
-| `API_KEY`                 | *(vuota)*            | Se impostata, richiede l'header `X-API-Key` su `POST /screenshot`, `GET /screenshot/{id}` e `GET /jobs`. Vuota di default: nessuna autenticazione, comodo per provare il servizio in locale — impostala per qualsiasi uso esposto pubblicamente |
+| `SCREENSHOTS_DIR`         | `/app/screenshots`   | Dove vengono salvati gli screenshot |
+| `DB_PATH`                 | `/app/data/jobs.db`  | Dove viene salvato il file SQLite dei job |
+| `MAX_CONCURRENT_CAPTURES` | `2`                  | Quanti screenshot possono essere generati insieme |
+| `RATE_LIMIT`              | `5/minute`           | Quante richieste può fare un client per minuto |
+| `API_KEY`                 | *(vuota)*            | Se impostata, protegge gli endpoint con una chiave (header `X-API-Key`). Vuota di default: nessuna autenticazione |
 
+## Come funziona
+
+Quando arriva una richiesta, il servizio **non fa aspettare il client** mentre genera lo screenshot (potrebbe metterci qualche secondo). Invece:
+
+1. Risponde subito con un id e stato `pending`.
+2. In background, genera davvero lo screenshot.
+3. Il client controlla lo stato quando vuole, con quell'id.
+
+```mermaid
+flowchart TD
+    Client["Client (browser, curl, Swagger UI)"] -->|"POST /screenshot { url }"| API["FastAPI (app/main.py)"]
+    API -->|"URL sicuro?"| Sicuro{"IP privato o riservato?"}
+    Sicuro -->|"sì → blocca"| Rifiuto["403 Forbidden"]
+    Sicuro -->|"no → prosegui"| Crea["Crea il job\n202 { id, status: pending }"]
+    Crea --> Coda["In background: app/jobs.py"]
+    Coda -->|"URL raggiungibile?"| Rag{"raggiungibile?"}
+    Rag -->|"no"| Errore["job → error"]
+    Rag -->|"sì"| Chrome["Playwright apre Chromium headless"]
+    Chrome --> Cattura["cattura lo screenshot"]
+    Cattura --> Fatto["job → done, file salvato"]
+    Fatto --> Disco[("./screenshots")]
+    Crea -.->|"ogni cambio di stato"| DB[("SQLite ./data/jobs.db")]
+    Errore -.-> DB
+    Fatto -.-> DB
+    Client -->|"GET /screenshot/{id} o GET /jobs\n(chiede lo stato quando vuole)"| API
+```
+
+Se un job finisce in `error` (es. sito irraggiungibile), resta salvato con l'errore: si può rimandarlo in coda con `POST /screenshot/{id}/retry`, senza doverlo ricreare da capo. Tutto quello che succede ai job (creazione, stato, errori) viene scritto su un file SQLite, così la coda non si perde se il container si riavvia.
+
+## Componenti principali
+
+- **`app/main.py`** — il server FastAPI: espone gli endpoint (`/screenshot`, `/jobs`, ecc.), controlla che l'URL sia sicuro, limita quante richieste può fare un client di seguito.
+- **`app/jobs.py`** — la "regia": per ogni job, controlla che l'URL risponda, chiama Playwright per lo screenshot, aggiorna lo stato (`pending` → `processing` → `done`/`error`).
+- **`app/db.py`** — salva e legge i job da un file SQLite (`./data/jobs.db`), così sopravvivono a un riavvio del container.
+- **`app/screenshot.py`** — apre la pagina con Chromium (Playwright) e cattura l'immagine. Se la pagina impiega troppo a caricare, riprova automaticamente un paio di volte.
+- **`app/security.py`** — controlla che l'URL richiesto non punti a un indirizzo "interno" (vedi sezione [Sicurezza](#sicurezza) sotto).
+- **`app/utils.py`** — un paio di funzioni di supporto: genera il nome del file dello screenshot dall'URL, e controlla se un sito risponde prima di aprire il browser (più leggero che avviare Chromium per niente).
+- **`app/config.py`** — tutte le impostazioni del servizio (letture da variabili d'ambiente), in un unico punto.
+- **`app/static/index.html`** — una piccola pagina web per usare il servizio dal browser senza scrivere codice: un form per inviare un URL e una tabella che mostra tutti i job.
+
+## Sicurezza
+
+Questo servizio riceve un URL da chiunque e lo va a visitare. Il rischio principale si chiama **SSRF** (*Server-Side Request Forgery*): senza controlli, qualcuno potrebbe chiedere al servizio di visitare indirizzi che dovrebbero restare privati — ad esempio `localhost`, o la rete interna del server su cui gira, invece che un vero sito web pubblico.
+
+Cosa fa il servizio per proteggersi:
+
+- **Controlla il formato dell'URL** prima di tutto: se non è un URL valido (`http://` o `https://`), lo rifiuta subito (`422`).
+- **Controlla l'indirizzo IP reale dietro l'URL**: risolve il dominio (es. `google.com` → un IP) e verifica che non sia un IP privato o riservato (come quelli usati dalle reti interne). Se lo è, rifiuta la richiesta (`403`) prima ancora di iniziare.
+- **Ricontrolla anche durante la navigazione**: un sito "sicuro" al primo controllo potrebbe reindirizzare (redirect) verso un indirizzo interno. Per questo, ogni redirect viene ricontrollato da capo, non solo l'URL iniziale.
+- **Chiave API opzionale**: impostando la variabile `API_KEY`, gli endpoint principali richiedono l'header `X-API-Key` con il valore giusto, altrimenti rispondono `401`. Di default è disattivata, per poter provare subito il servizio senza configurare nulla — va attivata se il servizio viene esposto pubblicamente.
+- **Il container non gira come root**: se qualcuno riuscisse a compromettere il servizio, si ritroverebbe con i permessi di un utente limitato, non con accesso completo al sistema.
+
+## Scelte tecniche (e perché)
+
+- **Playwright** per fare gli screenshot: rispetto ad alternative come Selenium, ha un'API più moderna e gestisce da solo l'installazione del browser.
+- **Nessuna coda esterna (no Redis/Kafka)**: per non far aspettare il client bastava eseguire la cattura "in background" nello stesso processo (`BackgroundTasks` di FastAPI). Aggiungere un sistema di messaggistica separato avrebbe significato più infrastruttura da gestire, senza un reale bisogno a questa scala (un solo servizio, poche richieste).
+- **SQLite invece di un database vero e proprio (Postgres)**: stessa logica — è un singolo file, non serve un servizio server separato da avviare e configurare. Per un servizio che scrive pochi dati e non deve scalare su più server, è sufficiente.
+- **Un endpoint di retry manuale (`POST /screenshot/{id}/retry`)** invece di un sistema automatico di ritenta-i-falliti: più semplice da capire e da usare, e i job falliti restano comunque visibili e recuperabili quando serve.
+- **`uv`** per gestire le dipendenze Python invece di pip: è più veloce, soprattutto quando si reinstalla spesso (es. durante lo sviluppo o nella pipeline CI).
+- **Un controllo HTTP invece di un "ping"** per vedere se un sito è raggiungibile: il ping spesso non funziona su hosting/cloud (bloccato dai firewall) anche quando il sito è perfettamente raggiungibile via browser.
+
+## Struttura del progetto
+
+```
+.
+├── .github/workflows/ci.yml   # Pipeline CI: build + test ad ogni push
+├── app/
+│   ├── main.py                # Server FastAPI: endpoint, sicurezza, limiti
+│   ├── jobs.py                 # Regia dei job (stato, orchestrazione)
+│   ├── db.py                    # Salvataggio dei job su SQLite
+│   ├── screenshot.py          # Cattura screenshot con Playwright
+│   ├── utils.py                # Funzioni di supporto
+│   ├── security.py             # Controllo anti-SSRF
+│   ├── config.py               # Impostazioni del servizio
+│   ├── schemas.py              # Forma dei dati in ingresso/uscita
+│   └── static/index.html      # Interfaccia web minimale
+├── tests/                        # Test automatici (pytest)
+├── screenshots/                 # Screenshot generati (cartella condivisa col container)
+├── data/                         # File SQLite dei job (cartella condivisa col container)
+├── Dockerfile                    # Build dell'immagine (produzione + test)
+├── docker-compose.yml
+├── pyproject.toml               # Dipendenze del progetto
+└── uv.lock
+```
+
+## Test automatici
+
+I test girano in un container Docker separato, così le librerie di test non finiscono mai nell'immagine di produzione:
+
+```bash
+docker compose --profile test run --build --rm tests
+```
+
+Genera due report in `test-reports/`: uno con l'esito di ogni test, uno con la percentuale di codice coperto dai test.
+
+Ad ogni push su GitHub, la pipeline CI esegue lo stesso identico comando ([.github/workflows/ci.yml](.github/workflows/ci.yml)).
+
+Senza Docker:
+
+```bash
+uv run pytest
+```
+
+> **Nota**: `app/screenshot.py` ha una copertura di test bassa (~33%) di proposito — la parte che apre davvero Chromium non viene testata con un browser vero (renderebbe i test lenti e meno affidabili), ma con un "finto" screenshot (mock). È una scelta, non una lacuna.
+
+## Possibili miglioramenti futuri
+
+Cose che lascerei fuori scope per questo progetto, ma che avrebbero senso se dovesse crescere:
+
+- **Storage su cloud (es. S3)** invece che su disco locale: utile se il servizio dovesse girare su più container contemporaneamente, che oggi non potrebbero condividere la stessa cartella.
+- **Autenticazione più solida** (es. OAuth2/JWT) al posto della semplice chiave API, se il servizio venisse esposto a più utenti con permessi diversi.
+- **Metriche e osservabilità** (es. Prometheus/Grafana): oggi si vede solo se il servizio è su o giù (`/health`), non quanto impiegano le catture o quanti errori ci sono nel tempo.
+- **Test end-to-end con un browser reale**: la suite attuale non apre mai davvero Chromium (per restare veloce e affidabile); un secondo livello di test, più lento, potrebbe verificare anche quella parte.
