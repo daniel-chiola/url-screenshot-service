@@ -1,3 +1,5 @@
+"""Configurazione del servizio, letta da variabili d'ambiente."""
+
 import os
 
 SCREENSHOTS_DIR = os.getenv("SCREENSHOTS_DIR", "/app/screenshots")

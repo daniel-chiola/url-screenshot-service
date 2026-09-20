@@ -1,3 +1,5 @@
+"""Funzioni di utilità per derivare nomi file dagli URL e verificarne la raggiungibilità."""
+
 import httpx
 
 
