@@ -44,12 +44,6 @@ class JobsDatabase:
             )
             """
         )
-        # Migrazione: i database creati prima dell'introduzione di updated_at non hanno
-        # questa colonna ("CREATE TABLE IF NOT EXISTS" non altera una tabella già esistente).
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
-        if "updated_at" not in columns:
-            conn.execute("ALTER TABLE jobs ADD COLUMN updated_at TEXT")
-            conn.execute("UPDATE jobs SET updated_at = created_at WHERE updated_at IS NULL")
         return conn
 
     def _insert(self, row: dict) -> None:
