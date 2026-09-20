@@ -2,13 +2,13 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 
 from app.config import SCREENSHOTS_DIR
 from app.schemas import ScreenshotRequest, ScreenshotResponse
 from app.screenshot import capture_screenshot
-from app.utils import url_to_filename
+from app.utils import is_reachable, url_to_filename
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,6 +28,10 @@ def health() -> dict:
 @app.post("/screenshot", response_model=ScreenshotResponse)
 async def screenshot(request: ScreenshotRequest) -> ScreenshotResponse:
     url = str(request.url)
+    if not await is_reachable(url):
+        logger.warning("URL non raggiungibile: %s", url)
+        raise HTTPException(status_code=422, detail=f"URL non raggiungibile: {url}")
+
     filename = url_to_filename(url)
     output_path = os.path.join(SCREENSHOTS_DIR, filename)
     await capture_screenshot(url, output_path)
