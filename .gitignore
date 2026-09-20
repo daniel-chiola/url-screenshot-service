@@ -1,5 +1,9 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
+
+# Screenshot output
+screenshots/*
+!screenshots/.gitkeep
 *.py[codz]
 *$py.class
 

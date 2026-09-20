@@ -1,0 +1,7 @@
+services:
+  screenshot-service:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./screenshots:/app/screenshots
