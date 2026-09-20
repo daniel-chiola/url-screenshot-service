@@ -1,0 +1,22 @@
+name: CI
+
+"on":
+  push:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del codice
+        uses: actions/checkout@v4
+
+      - name: Build ed esecuzione della suite di test (container Docker dedicato)
+        run: docker compose --profile test run --build --rm tests
+
+      - name: Carica i report (esito test + coverage) come artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: test-reports/
+          if-no-files-found: warn

@@ -1,5 +1,7 @@
 # url-screenshot-service
 
+[![CI](https://github.com/daniel-chiola/url-screenshot-service/actions/workflows/ci.yml/badge.svg)](https://github.com/daniel-chiola/url-screenshot-service/actions/workflows/ci.yml)
+
 Servizio containerizzato che riceve un URL via API REST, genera uno screenshot della pagina con Chromium headless (Playwright) e lo salva su file.
 
 ## Architettura
@@ -73,6 +75,9 @@ Un servizio che va a fetchare URL arbitrari forniti dall'utente è per natura es
 
 ```
 .
+├── .github/
+│   └── workflows/
+│       └── ci.yml            # Pipeline CI: build + test ad ogni push
 ├── app/
 │   ├── main.py           # FastAPI app, endpoint, rate limit ed export file statici
 │   ├── jobs.py             # Coda in-memory dei job, semaforo di concorrenza
@@ -159,6 +164,8 @@ Il servizio sarà disponibile su `http://localhost:8000`.
 ## Test automatici
 
 I test (pytest) girano in un container Docker separato, basato su uno stage dedicato del [Dockerfile](Dockerfile) (`test`) che non fa parte dell'immagine di produzione — le dipendenze di test (`pytest`, `pytest-cov`, `pytest-html`) non vengono quindi mai spedite nell'immagine che gira in produzione (stage `runtime`).
+
+**CI**: la suite gira automaticamente ad ogni push su GitHub Actions ([.github/workflows/ci.yml](.github/workflows/ci.yml)) — stesso identico comando usato in locale, nessuna duplicazione di logica tra ambiente locale e pipeline. Il badge in cima al README riflette l'esito dell'ultima esecuzione.
 
 ```bash
 docker compose --profile test run --build --rm tests
