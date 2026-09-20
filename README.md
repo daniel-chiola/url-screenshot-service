@@ -82,8 +82,10 @@ Un servizio che va a fetchare URL arbitrari forniti dall'utente è per natura es
 │   ├── schemas.py          # Modelli Pydantic (request/response)
 │   └── static/
 │       └── index.html      # UI web minimale
+├── tests/                    # Test automatici (pytest) — fuori da app/, non entra nell'immagine di produzione
 ├── screenshots/             # Output degli screenshot (montata come volume)
-├── Dockerfile
+├── test-reports/            # Report HTML dei test (generato, non versionato)
+├── Dockerfile                # Multi-stage: "runtime" (produzione) e "test"
 ├── docker-compose.yml
 ├── pyproject.toml           # Dipendenze del progetto (gestite con uv)
 └── uv.lock
@@ -141,7 +143,23 @@ Il servizio sarà disponibile su `http://localhost:8000`.
 
 > Il default di `SCREENSHOTS_DIR` (`/app/screenshots`) è pensato per il filesystem del container. In locale va sovrascritto con una directory esistente, es. `./screenshots` (vedi tabella [Configurazione](#configurazione)).
 
-## Utilizzo e test
+## Test automatici
+
+I test (pytest) girano in un container Docker separato, basato su uno stage dedicato del [Dockerfile](Dockerfile) (`test`) che non fa parte dell'immagine di produzione — le dipendenze di test (`pytest`, `pytest-html`) non vengono quindi mai spedite nell'immagine che gira in produzione (stage `runtime`).
+
+```bash
+docker compose --profile test run --rm tests
+```
+
+Il container esegue la suite, scrive un report HTML in `test-reports/report.html` (cartella montata sull'host, sopravvive alla chiusura del container) e si chiude da solo. Il servizio `tests` ha `profiles: ["test"]`, quindi non parte mai con un normale `docker compose up`.
+
+In locale, senza Docker:
+
+```bash
+uv run pytest
+```
+
+## Utilizzo e test manuale
 
 Una volta che il servizio è in esecuzione (`docker compose up -d --build`, oppure in locale con `uv`), puoi verificarlo in tre modi.
 
