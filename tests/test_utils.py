@@ -36,3 +36,48 @@ async def test_is_reachable_url_raggiungibile(monkeypatch):
     result = await utils.is_reachable("https://example.com")
 
     assert result is True
+
+
+async def test_is_reachable_fallback_su_get_se_head_non_supportato(monkeypatch):
+    """Se il server risponde 405 a HEAD, is_reachable ritenta con GET."""
+    class FakeResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def head(self, url):
+            return FakeResponse(405)
+
+        async def get(self, url):
+            return FakeResponse(200)
+
+    monkeypatch.setattr(utils.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient())
+
+    result = await utils.is_reachable("https://example.com")
+
+    assert result is True
+
+
+async def test_is_reachable_errore_di_rete(monkeypatch):
+    """Se la richiesta fallisce (errore di rete), is_reachable ritorna False."""
+    class FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def head(self, url):
+            raise utils.httpx.RequestError("simulato")
+
+    monkeypatch.setattr(utils.httpx, "AsyncClient", lambda **kwargs: FakeAsyncClient())
+
+    result = await utils.is_reachable("https://esempio-morto.test")
+
+    assert result is False

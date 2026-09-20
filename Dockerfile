@@ -13,7 +13,9 @@ RUN uv sync --frozen --no-cache
 COPY app ./app
 COPY tests ./tests
 
-CMD ["uv", "run", "pytest", "--html=/app/test-reports/report.html", "--self-contained-html"]
+CMD ["uv", "run", "pytest", \
+     "--html=/app/test-reports/report.html", "--self-contained-html", \
+     "--cov=app", "--cov-report=term-missing", "--cov-report=html:/app/test-reports/coverage"]
 
 
 FROM base AS runtime
