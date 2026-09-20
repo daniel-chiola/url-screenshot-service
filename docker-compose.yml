@@ -7,6 +7,8 @@ services:
       - "8000:8000"
     volumes:
       - ./screenshots:/app/screenshots
+    environment:
+      - PYTHONUNBUFFERED=1
 
   tests:
     build:
@@ -15,3 +17,5 @@ services:
     profiles: ["test"]
     volumes:
       - ./test-reports:/app/test-reports
+    environment:
+      - PYTHONUNBUFFERED=1
