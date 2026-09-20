@@ -22,7 +22,9 @@ AD_URL_PATTERNS = (
 def _make_route_guard(block_ads: bool):
     async def guard(route: Route) -> None:
         request = route.request
-        # Blocca ogni navigazione (inclusi i redirect) verso IP privati/riservati: protezione SSRF.
+        # Controlliamo l'indirizzo anche qui, non solo prima di iniziare: un URL pubblico
+        # potrebbe reindirizzare (redirect) verso un indirizzo interno una volta aperto,
+        # e ogni redirect passa di nuovo da qui perché genera una nuova navigazione.
         if request.resource_type == "document" and not await is_safe_url(request.url):
             await route.abort()
             return
