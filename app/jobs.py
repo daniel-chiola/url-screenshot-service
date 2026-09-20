@@ -103,6 +103,16 @@ async def list_jobs(limit: int = 50) -> list[Job]:
     return [Job._from_row(row) for row in rows]
 
 
+async def count_jobs(status: str | None = None) -> int:
+    """Conta i job, opzionalmente filtrati per stato."""
+    return await db.count(status)
+
+
+async def avg_seconds_to_completion() -> float | None:
+    """Tempo medio (in secondi) impiegato dai job per arrivare a "done" o "error" (job ancora in coda esclusi)."""
+    return await db.avg_seconds_to_completion()
+
+
 async def retry_job(job_id: str) -> Job | None:
     """Rimette in coda un job in stato 'error'. None se non esiste o non è in errore."""
     job = await get_job(job_id)
