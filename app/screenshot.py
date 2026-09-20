@@ -5,6 +5,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from app.logger import app_logger
 from app.security import is_safe_url
 
 # Pattern minimi per bloccare i principali network pubblicitari/di tracking più comuni.
@@ -26,6 +27,7 @@ def _make_route_guard(block_ads: bool):
         # potrebbe reindirizzare (redirect) verso un indirizzo interno una volta aperto,
         # e ogni redirect passa di nuovo da qui perché genera una nuova navigazione.
         if request.resource_type == "document" and not await is_safe_url(request.url):
+            app_logger.redirect_blocked(request.url)
             await route.abort()
             return
         if block_ads and any(pattern in request.url for pattern in AD_URL_PATTERNS):
@@ -59,7 +61,7 @@ async def capture_screenshot(
                 color_scheme="dark" if dark_mode else "light",
             )
             await page.route("**/*", _make_route_guard(block_ads))
-            await page.goto(url)
-            await page.screenshot(path=output_path, full_page=full_page)
+            await page.goto(url, wait_until="domcontentloaded", timeout=10000)
+            await page.screenshot(path=output_path, full_page=full_page, type="jpeg", quality=80, animations="disabled")
         finally:
             await browser.close()
