@@ -61,6 +61,58 @@ async def test_list_jobs_rispetta_il_limite():
     assert len(result) == 2
 
 
+# --- count_jobs / avg_seconds_to_completion ---
+
+
+async def test_count_jobs_senza_filtro_conta_tutti():
+    """count_jobs senza argomenti conta tutti i job, di qualsiasi stato."""
+    await jobs.create_job("https://uno.com")
+    await jobs.create_job("https://due.com")
+
+    assert await jobs.count_jobs() == 2
+
+
+async def test_count_jobs_filtra_per_stato():
+    """count_jobs(status=...) conta solo i job in quello stato."""
+    await jobs.create_job("https://uno.com")  # resta "pending"
+
+    assert await jobs.count_jobs(status="pending") == 1
+    assert await jobs.count_jobs(status="done") == 0
+
+
+async def test_avg_seconds_to_completion_none_senza_job_completati():
+    """avg_seconds_to_completion torna None se nessun job è ancora in done/error."""
+    await jobs.create_job("https://uno.com")  # resta "pending", non conta
+
+    assert await jobs.avg_seconds_to_completion() is None
+
+
+async def test_avg_seconds_to_completion_include_sia_done_che_error(monkeypatch):
+    """avg_seconds_to_completion misura il tempo medio tra creazione e completamento, done ed error insieme."""
+    async def fake_is_reachable_ok(url):
+        return True
+
+    async def fake_capture_screenshot(url, output_path, **kwargs):
+        pass
+
+    monkeypatch.setattr(jobs, "is_reachable", fake_is_reachable_ok)
+    monkeypatch.setattr(jobs, "capture_screenshot", fake_capture_screenshot)
+    job_done = await jobs.create_job("https://example.com")
+    await jobs.process_job(job_done.id)  # → "done"
+
+    async def fake_is_reachable_ko(url):
+        return False
+
+    monkeypatch.setattr(jobs, "is_reachable", fake_is_reachable_ko)
+    job_error = await jobs.create_job("https://esempio-morto.com")
+    await jobs.process_job(job_error.id)  # → "error"
+
+    avg = await jobs.avg_seconds_to_completion()
+
+    assert avg is not None
+    assert avg >= 0
+
+
 # --- process_job: qui servono i mock, per non chiamare rete/browser veri ---
 #
 # jobs.py fa `from app.utils import is_reachable` e `from app.screenshot import
