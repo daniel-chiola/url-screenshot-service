@@ -49,5 +49,11 @@ class AppLogger:
     def auth_failed(self, path: str) -> None:
         self._logger.warning("Richiesta rifiutata: API key mancante o non valida (%s)", path)
 
+    def browser_started(self) -> None:
+        self._logger.info("Browser Chromium condiviso avviato")
+
+    def browser_restarted(self) -> None:
+        self._logger.warning("Browser Chromium condiviso non raggiungibile: ne avvio uno nuovo")
+
 
 app_logger = AppLogger()
