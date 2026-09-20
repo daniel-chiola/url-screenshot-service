@@ -7,6 +7,10 @@ screenshots/*
 
 # Report di test
 test-reports/
+
+# Database dei job (persistito su volume, non va versionato)
+data/*
+!data/.gitkeep
 *.py[codz]
 *$py.class
 
