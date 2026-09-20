@@ -54,6 +54,14 @@ def health() -> dict:
     """Dice se il servizio è attivo (usato per i controlli di stato automatici)."""
     return {"status": "ok"}
 
+@app.get("/stats", dependencies=[Depends(require_api_key)])
+async def get_stats() -> dict:
+    """Metriche essenziali sui job: quanti completati, quanti in errore, tempo medio di completamento."""
+    return {
+        "done_jobs": await jobs.count_jobs(status="done"),
+        "error_jobs": await jobs.count_jobs(status="error"),
+        "avg_completion_seconds": await jobs.avg_seconds_to_completion(),
+    }
 
 @app.post("/screenshot", response_model=JobResponse, status_code=202, dependencies=[Depends(require_api_key)])
 @limiter.limit(RATE_LIMIT)
