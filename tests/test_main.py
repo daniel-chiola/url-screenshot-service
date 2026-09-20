@@ -149,6 +149,37 @@ def test_health_pubblico_anche_con_api_key_configurata(monkeypatch):
     assert response.status_code == 200
 
 
+# --- GET /stats ---
+
+
+async def test_stats_conta_done_ed_errori(monkeypatch):
+    """GET /stats riporta quanti job sono "done" e quanti in "error"."""
+    async def fake_is_reachable_ko(url):
+        return False
+
+    monkeypatch.setattr(jobs, "is_reachable", fake_is_reachable_ko)
+    await jobs.create_job("https://esempio-morto.com")  # resta "pending", non conta
+    job_fallito = await jobs.create_job("https://esempio-morto-2.com")
+    await jobs.process_job(job_fallito.id)  # → "error"
+
+    response = client.get("/stats")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["error_jobs"] == 1
+    assert data["done_jobs"] == 0
+    assert data["avg_completion_seconds"] >= 0
+
+
+def test_stats_richiede_api_key_se_configurata(monkeypatch):
+    """Con API_KEY configurata, GET /stats senza header X-API-Key torna 401."""
+    monkeypatch.setattr(main, "API_KEY", "segreto-di-test")
+
+    response = client.get("/stats")
+
+    assert response.status_code == 401
+
+
 # --- POST /screenshot/{id}/retry ---
 
 
