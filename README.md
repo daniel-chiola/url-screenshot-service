@@ -34,12 +34,17 @@ Client (curl / Swagger UI) ──┤
                         │
                         ▼  servito come statico su GET /screenshots/<file>
      Browser (polling su GET /screenshot/{id} e GET /jobs, mostra risultato e coda)
+
+Ad ogni passaggio di stato, app/jobs.py scrive su SQLite (app/db.py, volume ./data):
+la coda sopravvive a un riavvio del container. Un job finito in "error" può essere
+rimesso in coda dall'utente con POST /screenshot/{id}/retry (anche dalla UI).
 ```
 
 Componenti:
 
-- **FastAPI** ([app/main.py](app/main.py)): espone `POST /screenshot` (crea un job e torna `202` con `{id, status}`), `GET /screenshot/{id}` (stato di un job), `GET /jobs` (coda completa) e `GET /health`. Il rate limit (`slowapi`) protegge `POST /screenshot` da richieste eccessive per IP.
-- **Coda dei job** ([app/jobs.py](app/jobs.py)): job store in-memory (nessun DB/broker esterno). `process_job()` orchestra verifica di raggiungibilità, derivazione nome file e cattura, aggiornando lo stato del job (`pending` → `processing` → `done`/`error`). Un `asyncio.Semaphore` limita quante catture Playwright girano in parallelo, indipendentemente dal rate limit sulle richieste in ingresso.
+- **FastAPI** ([app/main.py](app/main.py)): espone `POST /screenshot` (crea un job e torna `202` con `{id, status}`), `GET /screenshot/{id}` (stato di un job), `POST /screenshot/{id}/retry` (rimette in coda un job fallito), `GET /jobs` (coda completa) e `GET /health`. Il rate limit (`slowapi`) protegge `POST /screenshot` e il retry da richieste eccessive per IP.
+- **Coda dei job** ([app/jobs.py](app/jobs.py)): orchestrazione (`process_job()`: verifica raggiungibilità, derivazione nome file, cattura) e stato (`pending` → `processing` → `done`/`error`). Un `asyncio.Semaphore` limita quante catture Playwright girano in parallelo, indipendentemente dal rate limit sulle richieste in ingresso. Non tiene più nulla in memoria: ogni lettura/scrittura passa da `app/db.py`.
+- **Persistenza** ([app/db.py](app/db.py)): i job sono salvati su SQLite (libreria `sqlite3` della stdlib, nessuna dipendenza esterna), un file montato come volume (`./data`) — sopravvivono a un riavvio o una ricreazione del container. `retry_job()` rimette in `pending` un job in `error`, ripulendo errore e filename.
 - **Playwright (Chromium headless)** ([app/screenshot.py](app/screenshot.py)): apre la pagina e cattura lo screenshot, con retry automatico (`tenacity`, backoff esponenziale, max 3 tentativi) sui timeout di navigazione.
 - **app/utils.py**: deriva un nome file sicuro dall'URL (es. `https://google.com` → `screenshot_google_com.png`) e verifica la raggiungibilità dell'URL via HTTP (`is_reachable`) prima di avviare il browser.
 - **app/security.py**: protezione SSRF (`is_safe_url`) — risolve l'host via DNS e blocca IP privati, loopback, link-local (incluso l'endpoint di metadata cloud `169.254.169.254`), riservati o multicast.
@@ -65,12 +70,13 @@ Un servizio che va a fetchare URL arbitrari forniti dall'utente è per natura es
 
 - **Playwright invece di Selenium**: API più moderna, gestione automatica dei binari del browser, supporto nativo async.
 - **`BackgroundTasks` invece di un broker esterno (Kafka/Redis)**: l'obiettivo era non far attendere il client durante la cattura, non costruire un sistema a eventi distribuito. `BackgroundTasks` risolve lo stesso problema restando nello stesso processo, senza infrastruttura aggiuntiva da configurare, testare e far girare in Docker — coerente con la scala di questo servizio (un solo worker, nessun bisogno di scalare orizzontalmente i consumer).
-- **Job store in-memory invece di Redis/DB**: per un servizio a singolo processo è sufficiente; il costo è che lo stato dei job si perde a un riavvio, accettabile per questo caso d'uso.
+- **SQLite (`sqlite3` della stdlib) invece di Postgres/SQLAlchemy per la persistenza dei job**: un file, zero servizi esterni da orchestrare in `docker-compose.yml`, coerente con la stessa motivazione che ha escluso Redis/Kafka per la coda — un servizio a singolo processo con un volume di scrittura basso (limitato da rate limit e semaforo) non ha bisogno di un database client-server. Ogni operazione apre/chiude la propria connessione (nessuna connessione condivisa da gestire tra coroutine), con la parte bloccante spostata in un thread (`asyncio.to_thread`), stesso pattern già usato in `app/security.py` per la risoluzione DNS.
 - **Rate limit (`slowapi`) + semaforo di concorrenza**: sono due protezioni distinte e complementari. Il rate limit impedisce che un client spammi richieste (per IP, configurabile). Il semaforo limita quante istanze di Chromium girano contemporaneamente, indipendentemente da quante richieste sono arrivate: protegge la memoria del container anche da un singolo client che manda molte richieste legittime in sequenza.
 - **Immagine base `mcr.microsoft.com/playwright/python`**: include già Chromium e tutte le dipendenze di sistema necessarie per l'headless, evitando di gestirle a mano nel Dockerfile.
 - **uv** per la gestione delle dipendenze Python (locale e nel Dockerfile), al posto di pip/requirements.txt: è scritto in Rust, quindi risoluzione e installazione delle dipendenze sono molto più veloci di pip (specialmente sulla cache, praticamente istantanee), oltre a offrire lock file (`uv.lock`) per build riproducibili e gestione integrata delle versioni di Python.
 - **Pre-check HTTP invece di ping ICMP**: un ping ICMP è spesso bloccato da firewall/provider cloud anche su siti perfettamente raggiungibili via HTTP, e richiede permessi elevati (socket raw) che il container non ha. Una richiesta `HEAD`/`GET` con timeout breve è più affidabile e coerente con ciò che Playwright farà comunque.
-- **`tenacity` per il retry**: gestisce backoff esponenziale e condizioni di stop in modo testato, evitando di reimplementare a mano una logica facile da sbagliare (es. mancanza di jitter). Il retry è mirato solo ai timeout di Playwright, non agli URL già scartati dal pre-check.
+- **`tenacity` per il retry automatico**: gestisce backoff esponenziale e condizioni di stop in modo testato, evitando di reimplementare a mano una logica facile da sbagliare (es. mancanza di jitter). Il retry è mirato solo ai timeout di Playwright, non agli URL già scartati dal pre-check.
+- **`POST /screenshot/{id}/retry` invece di una dead letter queue**: l'idea iniziale del progetto prevedeva una coda con DLQ (Redis Streams) per i job falliti. Con `BackgroundTasks` al posto di un broker esterno, una DLQ vera non ha un posto dove stare — reintrodurla solo per quello avrebbe contraddetto la scelta fatta sopra. Un endpoint di retry manuale sui job in `error` (già persistiti su SQLite, quindi non persi al riavvio) dà la stessa capacità di recupero, restando nello stesso modello architetturale.
 - **`HEALTHCHECK` Docker su `/health`** ([Dockerfile](Dockerfile)): Docker interroga il servizio ogni 30s e marca il container `healthy`/`unhealthy` (visibile con `docker ps`) — utile per orchestratori/monitoring che devono sapere se riavviare il container. Nota: se il processo `uvicorn` muore del tutto, il container esce direttamente (`Exited`), non passa per lo stato `unhealthy`, che si vede invece solo se il processo resta vivo ma smette di rispondere.
 
 ## Struttura del progetto
@@ -82,7 +88,8 @@ Un servizio che va a fetchare URL arbitrari forniti dall'utente è per natura es
 │       └── ci.yml            # Pipeline CI: build + test ad ogni push
 ├── app/
 │   ├── main.py           # FastAPI app, endpoint, rate limit ed export file statici
-│   ├── jobs.py             # Coda in-memory dei job, semaforo di concorrenza
+│   ├── jobs.py             # Orchestrazione dei job, semaforo di concorrenza
+│   ├── db.py                # Persistenza dei job su SQLite
 │   ├── screenshot.py      # Logica di cattura screenshot (Playwright)
 │   ├── utils.py            # Derivazione nome file da URL, check raggiungibilità
 │   ├── security.py         # Protezione SSRF (blocco IP privati/riservati)
@@ -92,6 +99,7 @@ Un servizio che va a fetchare URL arbitrari forniti dall'utente è per natura es
 │       └── index.html      # UI web minimale
 ├── tests/                    # Test automatici (pytest) — fuori da app/, non entra nell'immagine di produzione
 ├── screenshots/             # Output degli screenshot (montata come volume)
+├── data/                     # DB SQLite dei job (montata come volume, non versionato)
 ├── test-reports/            # Report HTML dei test (generato, non versionato)
 ├── Dockerfile                # Multi-stage: "runtime" (produzione) e "test"
 ├── docker-compose.yml
@@ -155,13 +163,13 @@ uv sync
 # 2. Installa il browser Chromium richiesto da Playwright
 uv run playwright install chromium --with-deps
 
-# 3. Avvia il server con reload automatico (SCREENSHOTS_DIR: vedi nota sotto)
-SCREENSHOTS_DIR=./screenshots uv run uvicorn app.main:app --reload
+# 3. Avvia il server con reload automatico (SCREENSHOTS_DIR e DB_PATH: vedi nota sotto)
+SCREENSHOTS_DIR=./screenshots DB_PATH=./data/jobs.db uv run uvicorn app.main:app --reload
 ```
 
 Il servizio sarà disponibile su `http://localhost:8000`.
 
-> Il default di `SCREENSHOTS_DIR` (`/app/screenshots`) è pensato per il filesystem del container. In locale va sovrascritto con una directory esistente, es. `./screenshots` (vedi tabella [Configurazione](#configurazione)).
+> I default di `SCREENSHOTS_DIR` (`/app/screenshots`) e `DB_PATH` (`/app/data/jobs.db`) sono pensati per il filesystem del container. In locale vanno sovrascritti con percorsi esistenti, es. `./screenshots` e `./data/jobs.db` (vedi tabella [Configurazione](#configurazione)).
 
 ## Test automatici
 
@@ -244,6 +252,12 @@ curl http://localhost:8000/screenshot/3f2...
 # → {"id":"3f2...","url":"https://www.google.com/","status":"done","filename":"screenshot_www_google_com.png","error":null,"created_at":"..."}
 ```
 
+Rimettere in coda un job fallito (torna `404` se il job non esiste o non è in stato `error`):
+
+```bash
+curl -X POST http://localhost:8000/screenshot/3f2.../retry
+```
+
 Vedere l'intera coda:
 
 ```bash
@@ -271,6 +285,7 @@ deve mostrare il file appena generato.
 | Variabile                | Default              | Descrizione                                  |
 |---------------------------|----------------------|-----------------------------------------------|
 | `SCREENSHOTS_DIR`         | `/app/screenshots`   | Directory in cui vengono salvati gli screenshot |
+| `DB_PATH`                 | `/app/data/jobs.db`  | Percorso del file SQLite in cui è persistita la coda dei job |
 | `MAX_CONCURRENT_CAPTURES` | `2`                  | Numero massimo di catture Playwright in parallelo |
 | `RATE_LIMIT`              | `5/minute`           | Limite di richieste `POST /screenshot` per IP (sintassi `slowapi`) |
 | `API_KEY`                 | *(vuota)*            | Se impostata, richiede l'header `X-API-Key` su `POST /screenshot`, `GET /screenshot/{id}` e `GET /jobs`. Vuota di default: nessuna autenticazione, comodo per provare il servizio in locale — impostala per qualsiasi uso esposto pubblicamente |
