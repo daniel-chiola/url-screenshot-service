@@ -54,6 +54,7 @@ Un servizio che va a fetchare URL arbitrari forniti dall'utente è per natura es
 - **Controllo all'ingresso** ([app/security.py](app/security.py), usato in [app/main.py](app/main.py)): prima di accodare qualunque job, l'host dell'URL viene risolto via DNS e ogni IP risultante viene verificato contro i range privati/loopback/link-local/riservati/multicast (modulo `ipaddress` della stdlib). Se anche un solo IP risolto è "non sicuro", la richiesta viene rifiutata con `403` — il job non viene nemmeno creato.
 - **Controllo ad ogni navigazione/redirect** ([app/screenshot.py](app/screenshot.py)): il solo controllo iniziale non basta, perché un URL pubblico può reindirizzare a un indirizzo interno *dopo* il controllo (bypass classico). Playwright viene istruito (`page.route()`) a ri-validare l'host di **ogni** richiesta di navigazione (incluso ogni hop di redirect) prima di lasciarla proseguire, non solo dell'URL iniziale.
 - **`is_reachable` senza follow-redirect** ([app/utils.py](app/utils.py)): il pre-check HTTP non segue più i redirect (`follow_redirects=False`) — un 3xx conta comunque come raggiungibile (`< 400`), quindi il risultato non cambia. Seguirli, però, permetterebbe di usare questo controllo per capire se un indirizzo interno risponde o no, prima ancora che scatti la protezione vera e propria in Playwright.
+- **Autenticazione via API key** ([app/main.py](app/main.py)): se la variabile `API_KEY` è impostata, `POST /screenshot`, `GET /screenshot/{id}` e `GET /jobs` richiedono l'header `X-API-Key` con il valore corretto, altrimenti `401`. `GET /health` resta sempre pubblico (è pensato per load balancer/orchestratori, che non hanno credenziali). Di default `API_KEY` è vuota e l'autenticazione è disattivata, per poter provare il servizio subito senza configurazione — va impostata per qualsiasi esposizione pubblica reale.
 
 **Limite noto, dichiarato onestamente**: resta un'esposizione teorica a DNS rebinding (l'host risolve a un IP pubblico al momento del controllo, poi il DNS cambia risposta prima della connessione effettiva). Chiuderlo del tutto richiederebbe pinnare l'IP risolto e usarlo direttamente per la connessione TCP (bypassando una seconda risoluzione DNS), cosa che Playwright non espone facilmente da API pubblica — non implementato per restare nello scope del progetto.
 
@@ -160,8 +161,10 @@ Il servizio sarà disponibile su `http://localhost:8000`.
 I test (pytest) girano in un container Docker separato, basato su uno stage dedicato del [Dockerfile](Dockerfile) (`test`) che non fa parte dell'immagine di produzione — le dipendenze di test (`pytest`, `pytest-cov`, `pytest-html`) non vengono quindi mai spedite nell'immagine che gira in produzione (stage `runtime`).
 
 ```bash
-docker compose --profile test run --rm tests
+docker compose --profile test run --build --rm tests
 ```
+
+Il `--build` è importante: senza, `docker compose run` riusa l'immagine già costruita in precedenza (se esiste), quindi dopo aver modificato il codice i risultati potrebbero riflettere una versione vecchia.
 
 Il container esegue la suite, genera due report in `test-reports/` (cartella montata sull'host, sopravvive alla chiusura del container) e si chiude da solo:
 - `test-reports/report.html` — esito di ogni test (pytest-html)
@@ -207,6 +210,8 @@ curl -X POST http://localhost:8000/screenshot \
   -d '{"url": "https://www.google.com"}'
 # → {"id":"3f2...","status":"pending"}
 ```
+
+> Se hai impostato `API_KEY`, aggiungi `-H "X-API-Key: <la-tua-chiave>"` a questa e alle altre richieste verso `/screenshot` e `/jobs` (non serve per `/health`), altrimenti la richiesta torna `401`.
 
 Con opzioni personalizzate (tutte facoltative, i default sono quelli mostrati):
 
@@ -259,4 +264,5 @@ deve mostrare il file appena generato.
 | `SCREENSHOTS_DIR`         | `/app/screenshots`   | Directory in cui vengono salvati gli screenshot |
 | `MAX_CONCURRENT_CAPTURES` | `2`                  | Numero massimo di catture Playwright in parallelo |
 | `RATE_LIMIT`              | `5/minute`           | Limite di richieste `POST /screenshot` per IP (sintassi `slowapi`) |
+| `API_KEY`                 | *(vuota)*            | Se impostata, richiede l'header `X-API-Key` su `POST /screenshot`, `GET /screenshot/{id}` e `GET /jobs`. Vuota di default: nessuna autenticazione, comodo per provare il servizio in locale — impostala per qualsiasi uso esposto pubblicamente |
 

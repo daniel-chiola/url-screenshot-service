@@ -2,7 +2,7 @@
 
 from fastapi.testclient import TestClient
 
-from app import jobs
+from app import jobs, main
 from app.main import app
 
 client = TestClient(app)
@@ -91,3 +91,53 @@ def test_screenshot(monkeypatch):
     data = response.json()
     assert data["status"] == "pending"
     assert "id" in data
+
+
+def test_screenshot_richiede_api_key_se_configurata(monkeypatch):
+    """Con API_KEY configurata, POST /screenshot senza header X-API-Key torna 401."""
+    monkeypatch.setattr(main, "API_KEY", "segreto-di-test")
+
+    response = client.post("/screenshot", json={"url": "https://www.example.com"})
+
+    assert response.status_code == 401
+
+def test_screenshot_rifiuta_api_key_sbagliata(monkeypatch):
+    """Con API_KEY configurata, un X-API-Key sbagliato torna 401."""
+    monkeypatch.setattr(main, "API_KEY", "segreto-di-test")
+
+    response = client.post(
+        "/screenshot",
+        json={"url": "https://www.example.com"},
+        headers={"X-API-Key": "sbagliato"},
+    )
+
+    assert response.status_code == 401
+
+def test_screenshot_accetta_api_key_corretta(monkeypatch):
+    """Con API_KEY configurata, il X-API-Key corretto lascia passare la richiesta."""
+    monkeypatch.setattr(main, "API_KEY", "segreto-di-test")
+
+    async def fake_is_reachable(url):
+        return True
+
+    async def fake_capture_screenshot(url, output_path, **kwargs):
+        pass
+
+    monkeypatch.setattr(jobs, "is_reachable", fake_is_reachable)
+    monkeypatch.setattr(jobs, "capture_screenshot", fake_capture_screenshot)
+
+    response = client.post(
+        "/screenshot",
+        json={"url": "https://www.example.com"},
+        headers={"X-API-Key": "segreto-di-test"},
+    )
+
+    assert response.status_code == 202
+
+def test_health_pubblico_anche_con_api_key_configurata(monkeypatch):
+    """GET /health resta pubblico anche con API_KEY configurata."""
+    monkeypatch.setattr(main, "API_KEY", "segreto-di-test")
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
