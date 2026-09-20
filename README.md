@@ -71,6 +71,7 @@ Un servizio che va a fetchare URL arbitrari forniti dall'utente è per natura es
 - **uv** per la gestione delle dipendenze Python (locale e nel Dockerfile), al posto di pip/requirements.txt: è scritto in Rust, quindi risoluzione e installazione delle dipendenze sono molto più veloci di pip (specialmente sulla cache, praticamente istantanee), oltre a offrire lock file (`uv.lock`) per build riproducibili e gestione integrata delle versioni di Python.
 - **Pre-check HTTP invece di ping ICMP**: un ping ICMP è spesso bloccato da firewall/provider cloud anche su siti perfettamente raggiungibili via HTTP, e richiede permessi elevati (socket raw) che il container non ha. Una richiesta `HEAD`/`GET` con timeout breve è più affidabile e coerente con ciò che Playwright farà comunque.
 - **`tenacity` per il retry**: gestisce backoff esponenziale e condizioni di stop in modo testato, evitando di reimplementare a mano una logica facile da sbagliare (es. mancanza di jitter). Il retry è mirato solo ai timeout di Playwright, non agli URL già scartati dal pre-check.
+- **`HEALTHCHECK` Docker su `/health`** ([Dockerfile](Dockerfile)): Docker interroga il servizio ogni 30s e marca il container `healthy`/`unhealthy` (visibile con `docker ps`) — utile per orchestratori/monitoring che devono sapere se riavviare il container. Nota: se il processo `uvicorn` muore del tutto, il container esce direttamente (`Exited`), non passa per lo stato `unhealthy`, che si vede invece solo se il processo resta vivo ma smette di rispondere.
 
 ## Struttura del progetto
 

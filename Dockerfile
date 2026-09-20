@@ -38,6 +38,9 @@ RUN mkdir -p /app/screenshots && chown -R pwuser:pwuser /app
 
 EXPOSE 8000
 
+# Health check docker: il container risponde con 200 OK se il servizio è attivo
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s \
+  CMD curl -f http://localhost:8000/health || exit 1
 # Cambiamo l'utente per l'esecuzione, applicando il principio del minimo privilegio
 USER pwuser
 
