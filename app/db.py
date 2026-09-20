@@ -10,6 +10,7 @@ usato in app/security.py per la risoluzione DNS.
 
 import asyncio
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import DB_PATH
@@ -38,20 +39,30 @@ class JobsDatabase:
                 status TEXT NOT NULL,
                 filename TEXT,
                 error TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                updated_at TEXT
             )
             """
         )
+        # Migrazione: i database creati prima dell'introduzione di updated_at non hanno
+        # questa colonna ("CREATE TABLE IF NOT EXISTS" non altera una tabella già esistente).
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
+        if "updated_at" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN updated_at TEXT")
+            conn.execute("UPDATE jobs SET updated_at = created_at WHERE updated_at IS NULL")
         return conn
 
     def _insert(self, row: dict) -> None:
+        row = {**row, "updated_at": row["created_at"]}
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO jobs
-                    (id, url, width, height, full_page, dark_mode, block_ads, status, filename, error, created_at)
+                    (id, url, width, height, full_page, dark_mode, block_ads, status, filename, error,
+                     created_at, updated_at)
                 VALUES
-                    (:id, :url, :width, :height, :full_page, :dark_mode, :block_ads, :status, :filename, :error, :created_at)
+                    (:id, :url, :width, :height, :full_page, :dark_mode, :block_ads, :status, :filename, :error,
+                     :created_at, :updated_at)
                 """,
                 row,
             )
@@ -69,9 +80,28 @@ class JobsDatabase:
             return [dict(row) for row in rows]
 
     def _update(self, job_id: str, fields: dict) -> None:
+        # updated_at segna l'ultimo cambio di stato: usato per calcolare quanto impiegano
+        # i job ad arrivare a "done"/"error" (vedi _avg_seconds_to).
+        fields = {**fields, "updated_at": datetime.now(timezone.utc).isoformat()}
         assignments = ", ".join(f"{key} = :{key}" for key in fields)
         with self._connect() as conn:
             conn.execute(f"UPDATE jobs SET {assignments} WHERE id = :id", {**fields, "id": job_id})
+
+    def _count(self, status: str | None) -> int:
+        with self._connect() as conn:
+            if status is None:
+                row = conn.execute("SELECT COUNT(*) AS n FROM jobs").fetchone()
+            else:
+                row = conn.execute("SELECT COUNT(*) AS n FROM jobs WHERE status = ?", (status,)).fetchone()
+            return row["n"]
+
+    def _avg_seconds_to_completion(self) -> float | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT AVG(julianday(updated_at) - julianday(created_at)) * 86400 AS avg_seconds "
+                "FROM jobs WHERE status IN ('done', 'error')"
+            ).fetchone()
+            return row["avg_seconds"]
 
     def clear_all_sync(self) -> None:
         """Svuota la tabella dei job. Versione sincrona, usata solo dai test."""
@@ -93,6 +123,17 @@ class JobsDatabase:
     async def update(self, job_id: str, **fields) -> None:
         """Aggiorna uno o più campi di un job esistente."""
         await asyncio.to_thread(self._update, job_id, fields)
+
+    async def count(self, status: str | None = None) -> int:
+        """Conta i job, opzionalmente filtrati per stato."""
+        return await asyncio.to_thread(self._count, status)
+
+    async def avg_seconds_to_completion(self) -> float | None:
+        """Tempo medio (in secondi) tra la creazione di un job e l'ultimo aggiornamento, per i job
+        in "done" o "error" (i job ancora in coda non contano). None se non c'è ancora nessun
+        job completato.
+        """
+        return await asyncio.to_thread(self._avg_seconds_to_completion)
 
 
 db = JobsDatabase()
